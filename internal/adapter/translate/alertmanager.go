@@ -42,9 +42,13 @@ type alertmanagerAlert struct {
 
 // AlertManagerBatch converts one Alertmanager webhook into canonical events.
 // tenantID/sourceID/clusterFallback come from the authenticated registry
-// entry. AM's per-alert "fingerprint" is kept as the event_key (the source's
-// stable dedup identity) but NEVER used as the platform fingerprint — that is
-// recomputed server-side from mapped identity fields (docs/03 §2).
+// entry. AM's per-alert "fingerprint" is the LOGICAL alert identity (kept in
+// source.external_event_id) but NEVER the observation key: event_receipts'
+// (tenant, source, source_event_key) unique index must see a distinct key per
+// OBSERVATION, or the Resolved delivery of the same alert collides with the
+// Firing receipt and is silently dropped as a duplicate (P0-01). The platform
+// fingerprint is always recomputed server-side from mapped identity fields
+// (docs/03 §2).
 func AlertManagerBatch(tenantID, sourceID, clusterFallback string, body []byte, receivedAt time.Time) ([]*eventv1.AlertEvent, error) {
 	var w alertmanagerWebhook
 	if err := json.Unmarshal(body, &w); err != nil {
@@ -139,15 +143,26 @@ func alertManagerOne(tenantID, sourceID, clusterFallback string, a alertmanagerA
 		StartsAt:       timestamppb.New(startsAt),
 		EndsAt:         timestamppb.New(endsAt),
 		OccurredAt:     timestamppb.New(occurredAt),
-		EventKey:       a.Fingerprint,
+		EventKey:       amObservationKey(entityUID, signal, name, startsAt),
 		AdapterVersion: AlertManagerAdapterVer,
 		SourceUrl:      a.GeneratorURL,
 	}
-	if ev.EventKey == "" {
-		ev.EventKey = entityUID
-	}
 	ev.EventId = ev.EventKey
 	return ev, nil
+}
+
+// amObservationKey derives the per-observation dedup identity (P0-01): a
+// stable hash over the logical alert identity (fingerprint-or-synthetic uid),
+// the signal, the rule name and the episode's startsAt. Redeliveries of the
+// same observation (AM retry, same startsAt/status) hash to the same key and
+// dedup at the receipt layer; the episode's Resolved and the next episode's
+// Firing hash to different keys and reach the state machine. The signal is
+// spelled "firing|resolved" so Firing≠Resolved even when timestamps coincide.
+func amObservationKey(entityUID string, signal eventv1.EventSignal, alertName string, startsAt time.Time) string {
+	obs := fmt.Sprintf("am-obs/v1\n%s\n%s\n%s\n%d",
+		entityUID, signal.String(), alertName, startsAt.UnixNano())
+	sum := sha256.Sum256([]byte(obs))
+	return "amobs-" + hex.EncodeToString(sum[:16])
 }
 
 // amSeverity maps the conventional severity label; unknown/missing values

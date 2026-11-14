@@ -2,6 +2,7 @@ package translate
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,38 @@ func TestDeepFlowNegativeFixtures(t *testing.T) {
 	}
 }
 
+// P0-01 (rh-p0-01): the observation key separates logical alert identity
+// (fingerprint) from per-observation identity — redeliveries dedup, the
+// episode's Resolved and the next episode's Firing each get their own key.
+func TestAlertManagerObservationKeys(t *testing.T) {
+	body := func(status, startsAt, endsAt string) []byte {
+		return []byte(fmt.Sprintf(`{"version":"4","groupKey":"g1","receiver":"r","status":%q,"alerts":[{"status":%q,"labels":{"alertname":"HighRequestLatency","severity":"critical"},"startsAt":%q,"endsAt":%q,"fingerprint":"fp-x"}]}`, status, status, startsAt, endsAt))
+	}
+	keyOf := func(t *testing.T, b []byte) string {
+		t.Helper()
+		events, err := AlertManagerBatch(amTenantID, amSourceID, clusterFallb, b, time.Now())
+		if err != nil || len(events) != 1 {
+			t.Fatalf("batch: %v (%d events)", err, len(events))
+		}
+		return events[0].GetEventKey()
+	}
+
+	kFiring := keyOf(t, body("firing", "2026-11-15T10:00:00Z", "0001-01-01T00:00:00Z"))
+	kRedelivery := keyOf(t, body("firing", "2026-11-15T10:00:00Z", "0001-01-01T00:00:00Z"))
+	kResolved := keyOf(t, body("resolved", "2026-11-15T10:00:00Z", "2026-11-15T10:30:00Z"))
+	kNextEpisode := keyOf(t, body("firing", "2026-11-15T11:00:00Z", "0001-01-01T00:00:00Z"))
+
+	if kFiring != kRedelivery {
+		t.Errorf("same observation redelivered: %q vs %q — must share the key (receipt dedup)", kFiring, kRedelivery)
+	}
+	if kFiring == kResolved {
+		t.Errorf("firing and resolved of one episode share the key %q — the recovery would be dropped as a duplicate (P0-01)", kFiring)
+	}
+	if kFiring == kNextEpisode {
+		t.Errorf("next-episode firing shares the key %q — the new episode would be absorbed (P0-01)", kFiring)
+	}
+}
+
 func TestAlertManagerGoldenWebhook(t *testing.T) {
 	events, err := AlertManagerBatch(amTenantID, amSourceID, clusterFallb,
 		fixture(t, "alertmanager/fixtures/SYNTHETIC-webhook.json"), time.Now())
@@ -165,8 +198,13 @@ func TestAlertManagerGoldenWebhook(t *testing.T) {
 	if ev.GetSignal() != eventv1.EventSignal_EVENT_SIGNAL_FIRING {
 		t.Errorf("signal = %v, want FIRING", ev.GetSignal())
 	}
-	if ev.GetEventKey() != "fakefingerprint" {
-		t.Errorf("event_key = %q, want AM fingerprint as source dedup key", ev.GetEventKey())
+	// P0-01: event_key is the per-observation identity, NOT the fingerprint —
+	// the fingerprint stays the logical identity in source.external_event_id.
+	if ev.GetEventKey() == "fakefingerprint" || ev.GetEventKey() == "" {
+		t.Errorf("event_key = %q, want a per-observation key distinct from the fingerprint", ev.GetEventKey())
+	}
+	if ev.GetSource().GetExternalEventId() != "fakefingerprint" {
+		t.Errorf("external_event_id = %q, want the AM fingerprint as logical identity", ev.GetSource().GetExternalEventId())
 	}
 	if ev.GetResource().GetClusterId() != clusterFallb {
 		t.Errorf("cluster fallback missing: %q", ev.GetResource().GetClusterId())
@@ -186,7 +224,7 @@ func TestAlertManagerMultiInstanceBatch(t *testing.T) {
 		t.Fatalf("per-alert mapping: want 3 events, got %d", len(events))
 	}
 	if events[0].GetEventKey() != events[1].GetEventKey() {
-		t.Error("duplicate fingerprint pair must keep identical event_key (consumer dedups)")
+		t.Error("duplicate fingerprint pair (same startsAt/status) must share the observation key (receipt dedups)")
 	}
 	res := events[2]
 	if res.GetSignal() != eventv1.EventSignal_EVENT_SIGNAL_RESOLVED {
