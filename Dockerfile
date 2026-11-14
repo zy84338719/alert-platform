@@ -26,9 +26,23 @@ ARG TARGETARCH=arm64
 # VERSION lands in each binary's `version` var via -X (set from git by CI).
 ARG VERSION=dev
 
+# Explicit binary list (go build -o dir/ ./cmd/... proved fragile under
+# buildx attestation builds: RUN exited 0 with an empty /out/ on the CI
+# runner). `ls` after build fails the stage loudly if anything is missing.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /out/ ./cmd/...
+      -o /out/alert-api ./cmd/alert-api \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/alert-worker ./cmd/alert-worker \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/alert-edge ./cmd/alert-edge \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/alert-migrate ./cmd/alert-migrate \
+    && ls -la /out/ \
+    && test -x /out/alert-api -a -x /out/alert-worker -a -x /out/alert-edge
 
 FROM ${RUN_IMAGE} AS runtime
 # Non-root runtime user (docs/08 security baseline).
