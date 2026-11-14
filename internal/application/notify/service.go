@@ -7,6 +7,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/oekit/logx"
@@ -23,7 +24,13 @@ type Task struct {
 	Payload     []byte
 	Attempts    int
 	CreatedAt   time.Time // enqueue time (P0-07 shadow-history cutoff)
+	LeaseToken  string    // P1-02 fencing token minted by the claim; empty = legacy
 }
+
+// ErrStaleNotifyLease marks a finish attempt from a worker that no longer
+// owns the lease (expired + re-claimed elsewhere): the attempt is audited,
+// the current owner's state is untouched.
+var ErrStaleNotifyLease = errors.New("notify: stale lease — task was re-claimed; result audited only")
 
 // Store is the notification persistence port (infrastructure/postgres).
 type Store interface {
@@ -31,7 +38,10 @@ type Store interface {
 	// enqueued before the notification-ownership moment — the shadow→active
 	// switch must never auto-replay shadow-era history. Zero time = no cutoff.
 	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]Task, error)
-	FinishNotifyTask(ctx context.Context, id string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
+	// FinishNotifyTask records one attempt outcome. leaseToken (P1-02) fences
+	// the completion: a stale worker's late result is audited but never
+	// overwrites the current owner's state (ErrStaleNotifyLease).
+	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
 	// PeekNotifyTasks lists pending tasks WITHOUT claiming or mutating them
 	// (REL-001 shadow mode: the would-have-sent trail must not disturb the
@@ -198,7 +208,15 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 	}
 
 	res := s.sender.Send(ctx, t.ChannelType, t.ChannelCfg, t.Payload)
-	if err := s.store.FinishNotifyTask(ctx, t.ID, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
+	if err := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
+		if errors.Is(err, ErrStaleNotifyLease) {
+			// P1-02: the lease expired and another worker re-claimed — this
+			// result is a late duplicate; the attempt row was audited, the
+			// current owner's state stays authoritative.
+			logx.CtxWarn(ctx, "late notification result discarded (lease fenced)",
+				"component", "alert-worker", "task", t.ID, logx.ErrKey, err)
+			return
+		}
 		logx.CtxError(ctx, "notify finish failed (attempt row may be missing)", logx.ErrKey, err, "task", t.ID)
 	}
 	if res.Sent {

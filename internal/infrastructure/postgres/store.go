@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/example/alert-platform/internal/application/correlation"
@@ -808,10 +809,11 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 			FOR UPDATE OF o SKIP LOCKED
 		)
 		UPDATE notification_outbox o
-		SET status='sending', lease_owner=$2, lease_until=now()+$3::interval, attempts=attempts+1, updated_at=now()
+		SET status='sending', lease_owner=$2, lease_until=now()+$3::interval, attempts=attempts+1,
+		    lease_token=gen_random_uuid(), updated_at=now()
 		FROM claimed WHERE o.id = claimed.id
 		RETURNING o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
-			o.created_at,
+			o.created_at, o.lease_token::text,
 			(SELECT type FROM notification_channels c WHERE c.id = o.channel_id),
 			(SELECT config FROM notification_channels c WHERE c.id = o.channel_id)`,
 		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())), nullTime(createdAfter))
@@ -821,7 +823,7 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 	var out []notify.Task
 	for rows.Next() {
 		var t notify.Task
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.ChannelType, &t.ChannelCfg); err != nil {
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.LeaseToken, &t.ChannelType, &t.ChannelCfg); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -836,7 +838,13 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 
 // FinishNotifyTask records the delivery outcome; retryAfter>0 schedules the
 // next attempt (429 Retry-After), otherwise exponential backoff applies.
-func (s *Store) FinishNotifyTask(ctx context.Context, id string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error {
+// FinishNotifyTask records one attempt outcome, fenced by the claim's lease
+// token (P1-02): the state update is conditional on ownership — a stale
+// worker whose lease expired (task re-claimed elsewhere) only gets its attempt
+// audited and receives ErrStaleNotifyLease, never overwriting the owner.
+// An empty token (rows claimed by a pre-0008 binary mid-rollout) keeps the
+// legacy by-id behavior.
+func (s *Store) FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -848,24 +856,44 @@ func (s *Store) FinishNotifyTask(ctx context.Context, id string, sent bool, retr
 		uuid.NewString(), id, attemptNo, nullInt(httpStatus), nullStr(failureCode), nullStr(errMsg)); err != nil {
 		return err
 	}
+	// Ownership-conditional update: only the current lease holder moves the
+	// state machine; the attempt row above persists regardless (audit).
+	var token any
+	if leaseToken != "" {
+		u, perr := uuid.Parse(leaseToken)
+		if perr != nil {
+			return fmt.Errorf("notify finish: invalid lease token %q: %w", leaseToken, perr)
+		}
+		token = u
+	}
+	var tag pgconn.CommandTag
 	if sent {
-		_, err = tx.Exec(ctx, `
-			UPDATE notification_outbox SET status='sent', lease_until=NULL, updated_at=now() WHERE id=$1`, id)
+		tag, err = tx.Exec(ctx, `
+			UPDATE notification_outbox SET status='sent', lease_until=NULL, lease_token=NULL, updated_at=now()
+			WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid)`, id, token)
 	} else if failureCode == "permanent" {
-		_, err = tx.Exec(ctx, `
-			UPDATE notification_outbox SET status='failed', lease_until=NULL, updated_at=now() WHERE id=$1`, id)
+		tag, err = tx.Exec(ctx, `
+			UPDATE notification_outbox SET status='failed', lease_until=NULL, lease_token=NULL, updated_at=now()
+			WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid)`, id, token)
 	} else {
-		_, err = tx.Exec(ctx, `
+		tag, err = tx.Exec(ctx, `
 			UPDATE notification_outbox SET status='retry_scheduled',
 				next_attempt_at = CASE WHEN $2::bigint > 0 THEN now()+($2||' seconds')::interval
 				                       ELSE now() + least(power(2, attempts), 600) * interval '1 second' END,
 				lease_until=NULL, updated_at=now()
-			WHERE id=$1`, id, int64(retryAfter.Seconds()))
+			WHERE id=$1 AND ($3::uuid IS NULL OR lease_token=$3::uuid)`, id, int64(retryAfter.Seconds()), token)
 	}
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	stale := tag.RowsAffected() == 0 && leaseToken != ""
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if stale {
+		return notify.ErrStaleNotifyLease
+	}
+	return nil
 }
 
 // SuppressNotifyAtSend re-checks silences before the actual HTTP call

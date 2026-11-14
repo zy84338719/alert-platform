@@ -84,16 +84,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 7 {
-		t.Fatalf("version after first Up = %d, want 7 (0001..0007: P0-05 event_history)", v1)
+	if v1 != 8 {
+		t.Fatalf("version after first Up = %d, want 8 (0001..0008: P1-02 lease fencing)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 7 {
-		t.Fatalf("version after second Up = %d, want 7", v2)
+	if v2 != 8 {
+		t.Fatalf("version after second Up = %d, want 8", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the

@@ -117,7 +117,7 @@ func (m *modeStore) RecordShadowDelivery(_ context.Context, taskID string) (bool
 	return true, nil
 }
 
-func (m *modeStore) FinishNotifyTask(_ context.Context, id string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string) error {
+func (m *modeStore) FinishNotifyTask(_ context.Context, id, _ string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string) error {
 	m.finished = append(m.finished, Finish{ID: id, Sent: sent, Failure: failureCode, AttemptNo: attemptNo})
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
+	"github.com/example/alert-platform/internal/application/notify"
 	"github.com/example/alert-platform/internal/infrastructure/testenv"
 )
 
@@ -103,7 +104,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 4) successful delivery records the attempt row and finalizes the task.
-	err = store.FinishNotifyTask(ctx, taskID, true, 0, reclaimed[0].Attempts, 200, "", "")
+	err = store.FinishNotifyTask(ctx, taskID, reclaimed[0].LeaseToken, true, 0, reclaimed[0].Attempts, 200, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +135,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		SELECT id::text FROM notification_outbox WHERE id::text <> $1 LIMIT 1`, taskID).Scan(&task2); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishNotifyTask(ctx, task2, false, 42*time.Second, 1, 429, "retryable", "rate limited"); err != nil {
+	if err := store.FinishNotifyTask(ctx, task2, "", false, 42*time.Second, 1, 429, "retryable", "rate limited"); err != nil {
 		t.Fatal(err)
 	}
 	var st2 string
@@ -151,7 +152,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 6) permanent 4xx marks failed (no further retries).
-	if err := store.FinishNotifyTask(ctx, task2, false, 0, 2, 404, "permanent", "gone"); err != nil {
+	if err := store.FinishNotifyTask(ctx, task2, "", false, 0, 2, 404, "permanent", "gone"); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, task2).Scan(&st2); err != nil {
@@ -467,5 +468,74 @@ func TestClaimNotifyTasksCreatedAfterCutoff(t *testing.T) {
 	}
 	if name != "CutNew" {
 		t.Fatalf("claimed %q, want CutNew — the shadow-era task must not replay", name)
+	}
+}
+
+// P1-02 (rh-p1-02) 失败测试：通知 Lease Fencing —— 完成操作必须做所有权
+// 条件更新（WHERE lease_token 匹配）：超时后任务被他 Worker 重领，旧 Worker
+// 的迟到完成只写审计、不覆盖新所有者状态；新 Worker 正常完成。
+func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	ev := notifyEvent("np-fence", eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+	if _, err := store.ApplyEvent(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker A 认领。
+	tasksA, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
+	if err != nil || len(tasksA) != 1 {
+		t.Fatalf("claim A: %d tasks err=%v", len(tasksA), err)
+	}
+	tokenA := tasksA[0].LeaseToken
+	if tokenA == "" {
+		t.Fatal("claim did not return a lease token (fencing impossible)")
+	}
+
+	// 租约过期，Worker B 重领 —— B 成为当前所有者。
+	if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET lease_until = now() - interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	tasksB, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
+	if err != nil || len(tasksB) != 1 {
+		t.Fatalf("claim B: %d tasks err=%v", len(tasksB), err)
+	}
+	tokenB := tasksB[0].LeaseToken
+	if tokenB == "" || tokenB == tokenA {
+		t.Fatalf("lease tokens must differ per claim: A=%q B=%q", tokenA, tokenB)
+	}
+
+	// Worker A 的迟到完成：不得改变状态，但必须留下审计行。
+	if err := store.FinishNotifyTask(ctx, tasksA[0].ID, tokenA, true, 0, tasksA[0].Attempts, 200, "", ""); err != notify.ErrStaleNotifyLease {
+		t.Fatalf("stale finish err = %v, want ErrStaleNotifyLease", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, tasksA[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sending" {
+		t.Fatalf("status after stale finish = %q, want 'sending' (owner B untouched)", status)
+	}
+	var attempts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notification_attempts WHERE task_id=$1`, tasksA[0].ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("late attempt audit rows = %d, want 1 (迟到行为有审计)", attempts)
+	}
+
+	// Worker B（当前所有者）正常完成。
+	if err := store.FinishNotifyTask(ctx, tasksB[0].ID, tokenB, true, 0, tasksB[0].Attempts, 200, "", ""); err != nil {
+		t.Fatalf("owner finish: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, tasksB[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" {
+		t.Fatalf("status after owner finish = %q, want 'sent'", status)
 	}
 }
