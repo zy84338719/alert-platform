@@ -1,6 +1,12 @@
-# 分布式统一告警平台 · 项目交接包（2026-11-12）
+# 分布式统一告警平台
 
-> **本包定位**：给研发团队启动项目的 **PRD / 技术架构 / IDL 契约 / 数据设计 / 20 周排期 / Backlog / 测试验收包**，附有可测试的 Go 状态机参考实现。**不是已经实现的完整生产系统**，也没有宣称能够一键部署告警平台。
+[![contract-and-domain](https://github.com/zy84338719/alert-platform/actions/workflows/contract-ci.yml/badge.svg)](https://github.com/zy84338719/alert-platform/actions/workflows/contract-ci.yml)
+
+> **现状（2026-11-14）**：P0–P6 八轮实现完成，backlog 80 任务 **DONE×70 / REVIEW×5 / BLOCKED×5**
+> （REVIEW/BLOCKED 全部为外部输入类，清单见 `planning/闸门评审记录-2026-11-14.md`）。
+> 本地一键：`make check`（lint+deps+build+test）；依赖：`make dev-deps` 起 PG55432/Kafka19092 后
+> `make dev-smoke`（E2E）/`scripts/replay_v02.sh`（v0.2 回放）/`scripts/e2e_mvp.sh`（MVP 闭环）/`scripts/drill_*`（混沌演练）。
+> 本包同时保留原始交接包定位（PRD/架构/IDL/排期/测试验收），是启动材料也是实现基线。
 
 ## 关键决策
 
@@ -13,28 +19,31 @@
 
 ## 项目组应该先读什么
 
-1. `docs/00-交付说明与待确认项.md` — 能做什么 / 不能做什么 / 必须确认什么。
-2. `docs/01-产品需求与范围.md` — PRD 和使用场景。
-3. `docs/02-总体架构.md` — 服务拓扑和部署边界。
-4. `docs/03-事件模型与状态机.md` — 业务正确性的核心。
-5. `docs/04-消息可靠性与一致性.md` — ACK、Offset、Outbox、重试。
-6. `docs/05-存储与数据库.md` — 表结构和读写策略。
-7. `docs/06-DeepFlow-v7.2.3-适配.md` — 最新版适配边界。
-8. `docs/07-IDL与代码生成规范.md` — Proto、Buf、hz、兼容性。
-9. `docs/08-安全运维与部署.md` — HA、认证、隔离、指标。
-10. `docs/09-测试与验收.md` — 合约、E2E、压测、混沌测试。
-11. `docs/10-研发排期与里程碑.md` — 20 周阶段与闸门。
-12. `docs/13-分阶段任务验收标准.md` — 80 个任务的逐条二值验收标准与证据要求。
-13. `planning/backlog.csv` — 可导入工单系统的任务清单。
-14. `planning/week_schedule.csv` — 全量周级计划。
+1. `planning/DEVELOPMENT_LOG.md` — 跨会话权威进度（八轮详情、坑、状态）。
+2. `planning/闸门评审记录-2026-11-14.md` — 证据核对式评审与剩余项。
+3. `planning/P6-GoNoGo-2026-11-14.md` — SLO 实测/回滚切换/放行条件。
+4. `docs/00-交付说明与待确认项.md` — 能做什么 / 不能做什么 / 必须确认什么。
+5. `docs/01-产品需求与范围.md` — PRD 和使用场景。
+6. `docs/02-总体架构.md` — 服务拓扑和部署边界。
+7. `docs/03-事件模型与状态机.md` — 业务正确性的核心。
+8. `docs/04-消息可靠性与一致性.md` — ACK、Offset、Outbox、重试。
+9. `docs/05-存储与数据库.md` — 表结构和读写策略。
+10. `docs/06-DeepFlow-v7.2.3-适配.md` — 最新版适配边界。
+11. `docs/07-IDL与代码生成规范.md` — Proto、Buf、hz、兼容性。
+12. `docs/08-安全运维与部署.md` — HA、认证、隔离、指标。
+13. `docs/09-测试与验收.md` — 合约、E2E、压测、混沌测试。
+14. `docs/10-研发排期与里程碑.md` — 20 周阶段与闸门。
+15. `docs/13-分阶段任务验收标准.md` — 80 个任务的逐条二值验收标准与证据要求。
+16. `planning/backlog.csv` — 可导入工单系统的任务清单。
+17. `planning/week_schedule.csv` — 全量周级计划。
 
 ## 目录结构
 
 ```text
 proto/                  Protobuf IDL（含 Hertz api 注解扩展）
 contracts/external/     DeepFlow Bridge JSON Schema 和合成示例
-migrations/             PostgreSQL 基础迁移 SQL（初稿；上线前审计）
-internal/domain/        标准库 Go 状态机参考实现 + 单元测试
+migrations/             PostgreSQL 迁移（0001–0006，15 表；生产前 DBA 审计）
+internal/{domain,application,adapter,infrastructure}  四层实现（依赖方向由 check_deps.py 强制）
 api/                    API 合约和响应/错误约定
 planning/               Backlog、20 周排期、团队分工、准入清单
 docs/                   PRD、架构、决策与测试验收
