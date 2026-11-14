@@ -562,3 +562,19 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - **REL-002 DRILL PASS** 四阶段全绿；`make check` 17 包全绿。
 - backlog：REL-002 → DONE；CHAOS-003 三条件（缺陷全闭/breaking 基线绿/回滚演练过）→ **DONE**。
 - 终态：**DONE×57 / REVIEW×18 / BLOCKED×5**。
+
+---
+
+## 2026-11-14 · 收尾走查：详情视图全面打通 + 路径参数绑定修复
+
+### 抓出并修复的真 bug（浏览器全视图走查）
+
+1. **路径参数绑定缺口（S2，横跨 10 个 handler）**：模型由 buf 生成、无 hz 绑定 tag，`BindAndValidate` 使**所有 path 参数为空**——详情/ACK/启停用/链接类 API 全部 404（此前 probe 测试只验证路由命中、集成测试走 service 层，双双漏过）。修复：handler 一律 `c.Param(...)` 直读路由参数；新增 `TestPathParamsReachHandlers` HTTP 级回归钉死。
+2. **告警详情路由缺失**：console router 只映射了 incident 详情，`#/alerts/{id}` 落回列表视图——补 `alertDetail` 映射。
+3. **Incident 数字枚举崩溃**：protobuf 数字枚举进 JS 调 `.toLowerCase()` 报错——`incidentStatusName()` 兼容数字/字符串两种线格式。
+4. **shadow 语义修复**（REL-002 演练抓出）：见上节。
+
+### 验证
+
+- 浏览器全视图走查：告警列表 → **告警详情**（fingerprint/labels/状态时间线 ∅→firing + 原始事件引用）→ **Incident 工作台**（US-01 标识/关联告警表/升级记录表）全部渲染，截图归档 `docs/evidence/console-{alert-detail,incident-workbench}.png`。
+- `make check` 17 包全绿、vet 干净。

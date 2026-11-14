@@ -217,6 +217,15 @@ views.alertDetail = {
   },
 };
 
+// IncidentStatus arrives as a protobuf NUMBER over the wire (docs/07:
+// 数字枚举); map it defensively regardless of the wire form.
+function incidentStatusName(v) {
+  if (typeof v === "number") {
+    return ["", "open", "acknowledged", "mitigated", "closed"][v] || String(v);
+  }
+  return String(v).toLowerCase().replace("incident_status_", "");
+}
+
 views.incidents = {
   async render(main) {
     const d = await api("GET", "/incidents/v1");
@@ -225,9 +234,9 @@ views.incidents = {
       ${(d.incidents || []).map((i) => `<tr>
         <td><code>${esc(i.incident_id.slice(0, 8))}…</code></td>
         <td>${esc(i.correlation_key.slice(0, 24))}…</td>
-        <td><span class="badge ${i.status.toLowerCase().replace("incident_status_", "")}">${i.status.toLowerCase().replace("incident_status_", "")}</span></td>
+        <td><span class="badge ${incidentStatusName(i.status)}">${incidentStatusName(i.status)}</span></td>
         <td>v${i.version}</td>
-        <td>${i.status.toLowerCase() === "incident_status_open" ? `<button onclick="ack('${esc(i.incident_id)}', ${i.version})">ACK</button>` : ""}</td>
+        <td>${incidentStatusName(i.status) === "open" ? `<button onclick="ack('${esc(i.incident_id)}', ${i.version})">ACK</button>` : ""}</td>
       </tr>`).join("") || '<tr><td colspan="5" class="muted">无 Incident。</td></tr>'}
       </table><p class="muted">ACK 只改处置状态，监控状态不变（FR-008）。</p>`;
   },
@@ -257,8 +266,8 @@ views.incidentDetail = {
       "</td><td>" + new Date(e.notified_at.seconds * 1000).toLocaleString() + "</td></tr>").join("");
     main.innerHTML =
       '<div class="card"><b>' + esc(d.incident.correlation_key.slice(0, 24)) + '…</b> ' +
-      '<span class="badge ' + d.incident.status.toLowerCase().replace("incident_status_", "") + '">' +
-      d.incident.status.toLowerCase().replace("incident_status_", "") + "</span> v" + d.incident.version +
+      '<span class="badge ' + incidentStatusName(d.incident.status) + '">' +
+      incidentStatusName(d.incident.status) + "</span> v" + d.incident.version +
       '<p class="muted">关联 ≠ 已证实根因（US-01）：auto_correlated/manual 是证据关联，不是根因结论。</p></div>' +
       '<div class="card"><b>关联告警</b><table><tr><th>告警</th><th>关联类型</th><th>等级</th><th>状态</th><th>开始</th><th></th></tr>' +
       (links || '<tr><td colspan="6" class="muted">无关联。</td></tr>') + "</table></div>" +
@@ -448,6 +457,7 @@ function route() {
   const parts = hash.slice(2).split("/");
   let viewName = parts[0] || "home";
   if (viewName === "incidents" && parts[1]) viewName = "incidentDetail";
+  if (viewName === "alerts" && parts[1]) viewName = "alertDetail";
   const view = views[viewName] || views.home;
   document.querySelectorAll("#nav a").forEach((a) =>
     a.classList.toggle("active", a.dataset.view === (parts[0] || "home")));

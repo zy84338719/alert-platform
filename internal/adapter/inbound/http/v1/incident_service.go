@@ -64,7 +64,7 @@ func AcknowledgeIncident(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	in, err := IncidentSvc.Acknowledge(ctx, id.TenantID, req.GetIncidentId(), id.ActorID,
+	in, err := IncidentSvc.Acknowledge(ctx, id.TenantID, c.Param("incident_id"), id.ActorID,
 		req.GetIdempotencyKey(), int64(req.GetExpectedVersion()))
 	switch {
 	case err == incident.ErrNotFound:
@@ -126,7 +126,7 @@ func GetIncident(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	in, err := IncidentSvc.Get(ctx, id.TenantID, req.GetIncidentId())
+	in, err := IncidentSvc.Get(ctx, id.TenantID, c.Param("incident_id"))
 	if err == incident.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "incident not found"))
 		return
@@ -157,7 +157,7 @@ func GetIncidentDetail(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	d, err := IncidentSvc.GetDetail(ctx, id.TenantID, req.GetIncidentId())
+	d, err := IncidentSvc.GetDetail(ctx, id.TenantID, c.Param("incident_id"))
 	if err == incident.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "incident not found"))
 		return
@@ -201,7 +201,7 @@ func LinkAlert(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	version, err := IncidentSvc.LinkAlert(ctx, LinkStore, id.TenantID, req.GetIncidentId(), req.GetInstanceId(), id.ActorID, int64(req.GetExpectedVersion()))
+	version, err := IncidentSvc.LinkAlert(ctx, LinkStore, id.TenantID, c.Param("incident_id"), c.Param("instance_id"), id.ActorID, int64(req.GetExpectedVersion()))
 	if err == incident.ErrVersionConflict {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40901, 409, "expected_version conflict"))
 		return
@@ -235,7 +235,7 @@ func UnlinkAlert(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	if err := IncidentSvc.UnlinkAlert(ctx, LinkStore, id.TenantID, req.GetIncidentId(), req.GetInstanceId(), id.ActorID); err != nil {
+	if err := IncidentSvc.UnlinkAlert(ctx, LinkStore, id.TenantID, c.Param("incident_id"), c.Param("instance_id"), id.ActorID); err != nil {
 		mw.Fail(ctx, c, ekiterrors.NewBadRequestError(err.Error()))
 		return
 	}

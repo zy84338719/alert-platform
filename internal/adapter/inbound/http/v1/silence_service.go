@@ -101,7 +101,7 @@ func RevokeSilence(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	sl, err := PolicySvc.RevokeSilence(ctx, id.TenantID, req.GetSilenceId())
+	sl, err := PolicySvc.RevokeSilence(ctx, id.TenantID, c.Param("silence_id"))
 	if err == policymgmt.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "silence not found"))
 		return

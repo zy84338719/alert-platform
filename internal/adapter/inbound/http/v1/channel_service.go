@@ -97,7 +97,7 @@ func SetChannelEnabled(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	ch, err := PolicySvc.SetChannelEnabled(ctx, id.TenantID, req.GetChannelId(), req.GetEnabled())
+	ch, err := PolicySvc.SetChannelEnabled(ctx, id.TenantID, c.Param("channel_id"), req.GetEnabled())
 	if err == policymgmt.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "channel not found"))
 		return

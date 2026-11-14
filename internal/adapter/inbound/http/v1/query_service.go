@@ -97,7 +97,7 @@ func GetAlert(ctx context.Context, c *app.RequestContext) {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50304, 503, "query service not wired"))
 		return
 	}
-	a, err := QuerySvc.Get(ctx, id.TenantID, req.GetInstanceId())
+	a, err := QuerySvc.Get(ctx, id.TenantID, c.Param("instance_id"))
 	switch {
 	case err == query.ErrForbidden:
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40301, 403, "cross-tenant access denied"))
@@ -128,7 +128,7 @@ func ListTransitions(ctx context.Context, c *app.RequestContext) {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50304, 503, "query service not wired"))
 		return
 	}
-	page, err := QuerySvc.Timeline(ctx, id.TenantID, req.GetInstanceId(), int(req.GetPageSize()), req.GetPageToken())
+	page, err := QuerySvc.Timeline(ctx, id.TenantID, c.Param("instance_id"), int(req.GetPageSize()), req.GetPageToken())
 	if err != nil {
 		mw.Fail(ctx, c, ekiterrors.NewBadRequestError(err.Error()))
 		return

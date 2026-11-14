@@ -66,7 +66,7 @@ func GetSource(ctx context.Context, c *app.RequestContext) {
 	if reg == nil {
 		return
 	}
-	src, err := reg.Get(ctx, id.TenantID, req.GetSourceId())
+	src, err := reg.Get(ctx, id.TenantID, c.Param("source_id"))
 	if err == sourcereg.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "source not found"))
 		return
@@ -158,7 +158,7 @@ func SetSourceEnabled(ctx context.Context, c *app.RequestContext) {
 	if reg == nil {
 		return
 	}
-	src, err := reg.SetEnabled(ctx, id.TenantID, req.GetSourceId(), req.GetEnabled())
+	src, err := reg.SetEnabled(ctx, id.TenantID, c.Param("source_id"), req.GetEnabled())
 	if err == sourcereg.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "source not found"))
 		return
@@ -188,7 +188,7 @@ func RevokeCredential(ctx context.Context, c *app.RequestContext) {
 	if reg == nil {
 		return
 	}
-	src, err := reg.RevokeCredential(ctx, id.TenantID, req.GetSourceId())
+	src, err := reg.RevokeCredential(ctx, id.TenantID, c.Param("source_id"))
 	if err == sourcereg.ErrNotFound {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40401, 404, "source not found"))
 		return
