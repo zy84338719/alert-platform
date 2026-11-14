@@ -1,18 +1,28 @@
 {{- if .Values.networkPolicy.enabled }}
-# Edge pods may ONLY egress to the central api; the api/worker only to
-# kafka/postgres (and DNS). Deny-by-otherwise.
+# P1-04: three INDEPENDENT policies — one per component — each pinning
+# instance AND component in the podSelector. The previous single policy
+# selected every pod of the release and its egress whitelist only covered
+# kafka/postgres/kube-system, so a default install blocked notification
+# workers reaching feishu/dingtalk/webhooks and the edge reaching anything
+# but the API. Deny-by-otherwise per component:
+#   api    -> same ns + kafka + postgres + DNS (+ apiExtraEgress)
+#   worker -> same ns + kafka + postgres + DNS + notification channels
+#             (+ workerExtraEgress)
+#   edge   -> same-ns central api + DNS ONLY (+ edgeExtraEgress)
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "alert-platform.fullname" . }}-api
+  name: {{ include "alert-platform.fullname" . }}-api-np
   labels: {{- include "alert-platform.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
-    # Same namespace first: edge→api and api→dev dependencies live here.
+    # Same namespace first: api -> dev dependencies live here.
     - to:
         - podSelector: {}
     - to:
@@ -22,7 +32,88 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.postgresNamespace }}
+    # DNS (kube-system, UDP/TCP 53).
+    - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with .Values.networkPolicy.egress.apiExtraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "alert-platform.fullname" . }}-worker-np
+  labels: {{- include "alert-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.kafkaNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.postgresNamespace }}
+    # DNS (kube-system, UDP/TCP 53).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # P1-04: notification channels (feishu/dingtalk/webhook) are OUTSIDE the
+    # cluster — a default install must not silently page nobody. Operators
+    # scope this to their channel endpoints via values (deny-by-otherwise
+    # stays intact for everything not listed).
+    {{- with .Values.networkPolicy.egress.workerExtraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "alert-platform.fullname" . }}-edge-np
+  labels: {{- include "alert-platform.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: edge
+  policyTypes: [Egress]
+  egress:
+    # Edge may ONLY egress to the central api in the same namespace.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: api
+    # DNS (kube-system, UDP/TCP 53).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with .Values.networkPolicy.egress.edgeExtraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}

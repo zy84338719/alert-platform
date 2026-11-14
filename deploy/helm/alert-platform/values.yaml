@@ -49,10 +49,18 @@ edge:
 
 networkPolicy:
   enabled: true
-  # edge may only talk to the central api; api/worker only to kafka+pg.
+  # P1-04: per-component policies. api/worker -> kafka+pg+DNS; worker also
+  # notification channels; edge -> central api + DNS only.
   egress:
     kafkaNamespace: "infra"
     postgresNamespace: "infra"
+    # Extra egress per component (deny-by-otherwise otherwise):
+    #   worker: notification channel endpoints (feishu/dingtalk/webhook) —
+    #     e.g. [{to: [{ipBlock: {cidr: "0.0.0.0/0"}, ports: [{protocol: TCP, port: 443}]}]}]
+    #   edge: collector mode upstreams (e.g. the HUATUO node) — same shape.
+    workerExtraEgress: []
+    apiExtraEgress: []
+    edgeExtraEgress: []
 
 pdb:
   enabled: true
