@@ -43,6 +43,7 @@ var wantTables = []string{
 	"edge_status",           // 0005 (MC-002)
 	"edge_leases",           // 0004 (HT-002)
 	"uid_history",           // 0006 (INC-004)
+	"event_history",         // 0007 (P0-05 事件历史)
 	"incident_escalations",  // 0006 (INC-005)
 }
 
@@ -83,16 +84,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 6 {
-		t.Fatalf("version after first Up = %d, want 6 (0001..0006)", v1)
+	if v1 != 7 {
+		t.Fatalf("version after first Up = %d, want 7 (0001..0007: P0-05 event_history)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 6 {
-		t.Fatalf("version after second Up = %d, want 6", v2)
+	if v2 != 7 {
+		t.Fatalf("version after second Up = %d, want 7", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the

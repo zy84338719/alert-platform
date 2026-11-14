@@ -190,3 +190,42 @@ func (s *QueryStore) ListTransitionsRange(ctx context.Context, tenantID string, 
 	}
 	return out, rows.Err()
 }
+
+// ListEvents (P0-05) reads the event history, newest first, tenant-scoped.
+func (s *QueryStore) ListEvents(ctx context.Context, f query.EventFilter) ([]query.Event, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT event_id, transport_id, kind, signal, COALESCE(severity,''), alert_name,
+			COALESCE(cluster_id,''), COALESCE(entity_type,''), COALESCE(entity_uid,''),
+			COALESCE(namespace,''), labels, occurred_at
+		FROM event_history
+		WHERE tenant_id=$1
+		  AND ($2::timestamptz IS NULL OR occurred_at >= $2)
+		  AND ($3::timestamptz IS NULL OR occurred_at < $3)
+		ORDER BY occurred_at DESC
+		LIMIT $4`, f.TenantID, nullTime(f.From), nullTime(f.To), f.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+	defer rows.Close()
+	var out []query.Event
+	for rows.Next() {
+		var e query.Event
+		var labels []byte
+		if err := rows.Scan(&e.EventID, &e.TransportID, &e.Kind, &e.Signal, &e.Severity, &e.AlertName,
+			&e.ClusterID, &e.EntityType, &e.EntityUID, &e.Namespace, &labels, &e.OccurredAt); err != nil {
+			return nil, err
+		}
+		if len(labels) > 0 {
+			_ = json.Unmarshal(labels, &e.Labels)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}

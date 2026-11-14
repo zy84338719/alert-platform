@@ -66,6 +66,31 @@ type Page[T any] struct {
 	TotalEstimate int64
 }
 
+// EventFilter is the event-history list request (P0-05): tenant is always
+// the authenticated one; the window [From, To] is optional (zero = unbounded).
+type EventFilter struct {
+	TenantID string
+	From     time.Time
+	To       time.Time
+	Limit    int
+}
+
+// Event is one event-history row (occurrence + stateful observations).
+type Event struct {
+	EventID    string
+	TransportID string
+	Kind       string // occurrence|stateful
+	Signal     string
+	Severity   string
+	AlertName  string
+	ClusterID  string
+	EntityType string
+	EntityUID  string
+	Namespace  string
+	Labels     map[string]string
+	OccurredAt time.Time
+}
+
 // Store is the read-side persistence port (infrastructure/postgres).
 type Store interface {
 	ListAlerts(ctx context.Context, f AlertFilter) (Page[Alert], error)
@@ -73,10 +98,24 @@ type Store interface {
 	// tenant ownership so mismatches map to ErrForbidden (not a silent 404).
 	GetAlertByID(ctx context.Context, instanceID string) (*Alert, error)
 	ListTransitions(ctx context.Context, tenantID, instanceID string, pageSize int, pageToken string) (Page[Transition], error)
+	// ListEvents (P0-05) reads the event history, newest first.
+	ListEvents(ctx context.Context, f EventFilter) ([]Event, error)
 }
 
 // Service wires the read use cases.
 type Service struct{ store Store }
+
+// ListEvents reads the event history window (P0-05), newest first. Limit
+// defaults to 100 and caps at 500.
+func (s *Service) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) {
+	if f.Limit <= 0 {
+		f.Limit = 100
+	}
+	if f.Limit > 500 {
+		f.Limit = 500
+	}
+	return s.store.ListEvents(ctx, f)
+}
 
 // NewService builds the query service.
 func NewService(store Store) *Service { return &Service{store: store} }

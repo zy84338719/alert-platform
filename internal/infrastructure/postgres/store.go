@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"errors"
 	"fmt"
 	"time"
@@ -96,7 +97,15 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 		return ApplyOutcome{Duplicate: true, Reason: "duplicate-observation"}, nil
 	}
 
-	// 2) Occurrence events carry no lifecycle (docs/03 §4): receipt only.
+	// 1b) Event history (P0-05): every applied observation becomes queryable —
+	// OCCURRENCE-class events (HUATUO kernel anomalies) were previously
+	// receipt-only and invisible to the event history / incident workbench.
+	// Same transaction as the receipt; duplicates never reach here.
+	if err := insertEventHistory(ctx, tx, ev); err != nil {
+		return ApplyOutcome{}, err
+	}
+
+	// 2) Occurrence events carry no lifecycle (docs/03 §4): receipt + history.
 	if ev.GetKind() == eventv1.EventKind_EVENT_KIND_OCCURRENCE {
 		if err := tx.Commit(ctx); err != nil {
 			return ApplyOutcome{}, fmt.Errorf("commit: %w", err)
@@ -378,6 +387,57 @@ func insertDomainOutbox(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent, 
 		return fmt.Errorf("insert domain outbox: %w", err)
 	}
 	return nil
+}
+
+// insertEventHistory persists one applied observation (P0-05): the event
+// history / incident workbench can query every kernel anomaly instead of only
+// seeing an invisible receipt. raw_payload keeps JSONB when the payload is
+// valid JSON, else wraps the text. Caller: applyEvent, post-receipt — the
+// row commits atomically with the rest of the transaction.
+func insertEventHistory(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent) error {
+	kind := "stateful"
+	if ev.GetKind() == eventv1.EventKind_EVENT_KIND_OCCURRENCE {
+		kind = "occurrence"
+	}
+	var rawAny any
+	if raw := ev.GetRawPayload(); len(raw) > 0 {
+		if json.Valid(raw) {
+			rawAny = json.RawMessage(raw)
+		} else {
+			rawAny = map[string]string{"text": string(raw)}
+		}
+	}
+	var occurred any
+	if t := ev.GetOccurredAt().AsTime(); !t.IsZero() {
+		occurred = t
+	}
+	sev := ev.GetSeverity().String()
+	if ev.GetSeverity() == eventv1.Severity_SEVERITY_UNSPECIFIED {
+		sev = ""
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO event_history
+			(tenant_id, source_id, event_id, transport_id, kind, signal, severity,
+			 alert_name, cluster_id, entity_type, entity_uid, resource_name, namespace,
+			 labels, annotations, raw_payload, occurred_at, received_at)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		ev.GetTenantId(), ev.GetSource().GetSourceId(), ev.GetEventId(), ev.GetTransportId(),
+		kind, signalText(ev.GetSignal()), sev, ev.GetAlertName(),
+		ev.GetResource().GetClusterId(), ev.GetResource().GetResourceType(), ev.GetResource().GetResourceUid(),
+		ev.GetResource().GetResourceName(), ev.GetResource().GetNamespace(),
+		labelsJSON(ev.GetLabels()), labelsJSON(ev.GetAnnotations()), rawAny,
+		occurred, orNow(ev.GetReceivedAt().AsTime(), time.Now))
+	if err != nil {
+		return fmt.Errorf("insert event history: %w", err)
+	}
+	return nil
+}
+
+// signalText renders the signal enum without the verbose prefix (history rows
+// are human-facing).
+func signalText(sig eventv1.EventSignal) string {
+	s := sig.String()
+	return strings.ToLower(strings.TrimPrefix(s, "EVENT_SIGNAL_"))
 }
 
 // MarkStaleBySources is the PROC-006 reconciliation write: for every ACTIVE

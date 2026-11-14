@@ -15,6 +15,7 @@ import (
 
 	"github.com/example/alert-platform/internal/application/authn"
 	"github.com/example/alert-platform/internal/application/ops"
+	"github.com/example/alert-platform/internal/application/query"
 )
 
 // PlatformStore is the operational store port (application/ops).
@@ -60,6 +61,69 @@ func RegisterPlatformAPI(h *server.Hertz) {
 			return
 		}
 		c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// Event history (P0-05): queryable observations (HUATUO occurrences etc.).
+	h.GET("/events/v1", func(ctx context.Context, c *app.RequestContext) {
+		id, ok := requirePerm(ctx, c, authn.PermAlertsRead)
+		if !ok {
+			return
+		}
+		if QuerySvc == nil {
+			c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "query service not wired"})
+			return
+		}
+		f := query.EventFilter{TenantID: id.TenantID}
+		if v := string(c.Query("limit")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				f.Limit = n
+			}
+		}
+		if v := string(c.Query("from")); v != "" {
+			if ts, err := time.Parse(time.RFC3339, v); err == nil {
+				f.From = ts
+			} else {
+				c.JSON(http.StatusBadRequest, map[string]string{"message": "from must be RFC3339"})
+				return
+			}
+		}
+		if v := string(c.Query("to")); v != "" {
+			if ts, err := time.Parse(time.RFC3339, v); err == nil {
+				f.To = ts
+			} else {
+				c.JSON(http.StatusBadRequest, map[string]string{"message": "to must be RFC3339"})
+				return
+			}
+		}
+		rows, err := QuerySvc.ListEvents(ctx, f)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		type ev struct {
+			EventID    string            `json:"event_id"`
+			TransportID string           `json:"transport_id"`
+			Kind       string            `json:"kind"`
+			Signal     string            `json:"signal"`
+			Severity   string            `json:"severity,omitempty"`
+			AlertName  string            `json:"alert_name"`
+			ClusterID  string            `json:"cluster_id,omitempty"`
+			EntityType string            `json:"entity_type,omitempty"`
+			EntityUID  string            `json:"entity_uid,omitempty"`
+			Namespace  string            `json:"namespace,omitempty"`
+			Labels     map[string]string `json:"labels,omitempty"`
+			OccurredAt string            `json:"occurred_at"`
+		}
+		out := make([]ev, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, ev{
+				EventID: r.EventID, TransportID: r.TransportID, Kind: r.Kind, Signal: r.Signal,
+				Severity: r.Severity, AlertName: r.AlertName, ClusterID: r.ClusterID,
+				EntityType: r.EntityType, EntityUID: r.EntityUID, Namespace: r.Namespace,
+				Labels: r.Labels, OccurredAt: r.OccurredAt.UTC().Format(time.RFC3339),
+			})
+		}
+		c.JSON(http.StatusOK, map[string]any{"events": out})
 	})
 
 	// Delivery records (UI-003: 发送记录/失败过滤).
