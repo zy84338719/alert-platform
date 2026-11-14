@@ -1,17 +1,17 @@
 ﻿id,phase,week,priority,owner,estimate_person_days,title,implementation,acceptance,dependencies,status
-ARC-001,P0,W01,P0,Architecture,3,冻结平台范围和 ADR,明确状态权威/通知权威/处置职责、前后端边界,架构评审签字与非目标清单,,REVIEW
+ARC-001,P0,W01,P0,Architecture,3,冻结平台范围和 ADR,明确状态权威/通知权威/处置职责、前后端边界,架构评审签字与非目标清单,,DONE
 ARC-002,P0,W01,P0,Backend-Integration,5,DeepFlow 真实契约采样,核实目标小版本(7.2.3/7.2.4)与授权；收集脱敏 Critical/Recovery/NoData 样本,fixtures 能反映真实源端数据且字段有证据,,BLOCKED
 ARC-003,P0,W01,P0,Backend-Core,3,Protobuf CanonicalEvent 定稿,定义 event/transport/episode/fingerprint/schema_version 与 fingerprint 版本化策略,事件模型与身份算法通过评审,ARC-001,DONE
-ARC-004,P0,W01,P0,QA,2,测试计划与验收矩阵,覆盖乱序/去重/断流/安全/性能/混沌,P0 用例与版本闸门通过评审,ARC-001,REVIEW
+ARC-004,P0,W01,P0,QA,2,测试计划与验收矩阵,覆盖乱序/去重/断流/安全/性能/混沌,P0 用例与版本闸门通过评审,ARC-001,DONE
 ARC-005,P0,W01,P0,SRE,1,容量与现有基础设施调查,核实 Kafka/PG/ClickHouse/网络与机房规格,已有基础设施容量和成本报告,,BLOCKED
-BASE-001,P1,W02,P0,Backend-Core,4,建立 Go Monorepo 和领域层,分离 domain/application/adapter/infrastructure 与包依赖 lint,go test 与包依赖规则通过,ARC-003,REVIEW
-BASE-002,P1,W02,P0,Backend-Integration,4,集成 Hertz/OEKit 统一基座,配置、日志、追踪、metrics、健康检查,本地启动所有二进制且有 trace,BASE-001,REVIEW
-BASE-003,P1,W02,P0,Backend-Governance,3,Buf 和 Protobuf 工具链,锁版本、lint/build/generate/breaking,变更 proto 时 CI 阻断 breaking,ARC-003,REVIEW
-BASE-004,P1,W02,P0,SRE,2,配置 CI 与镜像规范,lint/test/SBOM/容器多架构构建,CI 可构建并发布测试镜像,BASE-001,REVIEW
+BASE-001,P1,W02,P0,Backend-Core,4,建立 Go Monorepo 和领域层,分离 domain/application/adapter/infrastructure 与包依赖 lint,go test 与包依赖规则通过,ARC-003,DONE
+BASE-002,P1,W02,P0,Backend-Integration,4,集成 Hertz/OEKit 统一基座,配置、日志、追踪、metrics、健康检查,本地启动所有二进制且有 trace,BASE-001,DONE
+BASE-003,P1,W02,P0,Backend-Governance,3,Buf 和 Protobuf 工具链,锁版本、lint/build/generate/breaking,变更 proto 时 CI 阻断 breaking,ARC-003,DONE
+BASE-004,P1,W02,P0,SRE,2,配置 CI 与镜像规范,lint/test/SBOM/容器多架构构建,CI 可构建并发布测试镜像,BASE-001,DONE
 BASE-005,P1,W03,P0,Backend-Core,4,数据库迁移与最小模型,来源/告警/receipt/transition/outbox 初稿,Migration 集成测试通过,BASE-001,DONE
 BASE-006,P1,W03,P0,Backend-Integration,4,Kafka Topic 与 Producer 封装,消息键、Header、acks=all、错误码,入队 ACK 和失败返回正确,BASE-002,DONE
 BASE-007,P1,W03,P0,Backend-Governance,3,事件消费与测试生产器,模拟消息消费、Trace 贯穿和事件回放,一条模拟事件从 API 到 PG,"BASE-005,BASE-006",DONE
-BASE-008,P1,W03,P0,QA,2,P1 集成冒烟与首版验收,启动/停止/重复请求/基础限流,v0.1 通过闸门,BASE-007,REVIEW
+BASE-008,P1,W03,P0,QA,2,P1 集成冒烟与首版验收,启动/停止/重复请求/基础限流,v0.1 通过闸门,BASE-007,DONE
 ING-001,P2,W04,P0,Backend-Integration,6,DeepFlow HTTP Adapter,映射真实 Payload 与官方 event_level/state 枚举、来源校验,Critical/Recovery/NoData fixtures 通过,"ARC-002,BASE-003",REVIEW
 ING-002,P2,W04,P0,Backend-Integration,4,Alertmanager Adapter,解析 alerts[]、状态/时间/指纹,批量、多实例、重复用例通过,BASE-003,DONE
 ING-003,P2,W04,P0,Backend-Governance,4,Source Registry 与认证,登记来源/租户/集群，阻止伪造租户,跨租户写入被拒绝,BASE-005,DONE
@@ -22,7 +22,7 @@ PROC-003,P2,W05,P0,Backend-Governance,4,事务 Outbox + Relay,同事务记录通
 PROC-004,P2,W05,P0,QA,2,幂等与 Offset 故障测试,重复/DB 错误/消费者再均衡,所有事务不变量得到断言,PROC-001,DONE
 PROC-005,P2,W06,P0,Backend-Core,6,完整告警状态机,Firing/Resolved/Stale/Pending、last_seen、episode 与缺失时间保护,状态机边界与乱序测试通过,PROC-002,DONE
 PROC-006,P2,W06,P0,Backend-Integration,3,来源健康和 Stale 对账,区分断连、NoData、真实 Resolved,失联不自动恢复,"ING-001,ING-002",DONE
-PROC-007,P2,W06,P0,Backend-Governance,4,告警查询 API,列表/详情/状态时间线/分页与租户隔离,API 基于契约稳定返回,PROC-005,REVIEW
+PROC-007,P2,W06,P0,Backend-Governance,4,告警查询 API,列表/详情/状态时间线/分页与租户隔离,API 基于契约稳定返回,PROC-005,DONE
 PROC-008,P2,W06,P0,QA,3,v0.2 验收与回放,1000次同源重复与旧恢复消息乱序,告警状态无错误回滚,"PROC-005,PROC-006",DONE
 NOTI-001,P3,W07,P0,Backend-Governance,5,通知 Outbox Worker,claim/lease/失败退避/审计 与 subject 绑定(alert/instance),超时/重启后任务不丢失,PROC-003,DONE
 NOTI-002,P3,W07,P0,Backend-Governance,4,飞书和钉钉渠道,凭证/模板/429/错误码/超时,Mock+真实沙箱通道成功,NOTI-001,REVIEW
@@ -39,7 +39,7 @@ AUTH-002,P3,W09,P0,Backend-Governance,4,RBAC 与对象级授权,角色/权限模
 AUTH-003,P3,W09,P1,Backend-Governance,3,审计管道与查询,audit_logs 写入、查询 API 与脱敏,操作 100% 可审计可查询,AUTH-001,DONE
 MVP-001,P3,W09,P0,QA,4,端到端业务闭环,DeepFlow/AM->告警->通知->ACK->恢复,完整链路测试通过,"UI-001,UI-002,UI-004,POL-001",DONE
 MVP-002,P3,W09,P0,SRE,2,MVP 单集群 Shadow 上线,日志、指标、通知影子、回滚,既有通知未受干扰,MVP-001,BLOCKED
-MVP-003,P3,W09,P0,Architecture,2,MVP 阶段评审,状态一致性/接口兼容/问题清单,发布 v0.3 评审通过,MVP-001,REVIEW
+MVP-003,P3,W09,P0,Architecture,2,MVP 阶段评审,状态一致性/接口兼容/问题清单,发布 v0.3 评审通过,MVP-001,DONE
 UI-003,P4,W10,P1,Frontend,3,通知管理界面,渠道/规则/发送记录/失败过滤,操作可完成并有权限校验,NOTI-002,DONE
 EDGE-001,P4,W10,P0,Backend-Integration,7,Edge 本地 WAL/SQLite 队列,append/fsync/ack/upload/confirmed/compact,断网重启后缓冲仍在,BASE-006,DONE
 EDGE-002,P4,W10,P0,Backend-Integration,5,Edge Uploader 与重试,mTLS/批次稳定 ID/指数退避/限速,中心 503 后自动补传,EDGE-001,DONE
@@ -54,12 +54,12 @@ MC-001,P4,W12,P0,SRE,2,四集群安装与连通,home/dev/prod-studio/prod-tencen
 MC-005,P4,W12,P0,Backend-Governance,2,四集群来源与租户配置,sources/policies/edges 配置与租户映射,四区域来源注册完成,ING-003,BLOCKED
 MC-002,P4,W12,P1,Frontend,3,Edge/Cluster 健康页面,LastSeen、Buffer、Lag、重连次数,排障可视化达标,EDGE-002,DONE
 MC-003,P4,W12,P0,QA,4,多集群故障演练,断连30min、补传、中心实例重启,持久化事件能全部补传,MC-001,DONE
-MC-004,P4,W12,P0,Architecture,1,v0.5 架构验收,边缘数据保证说明和跨集群约束,v0.5 发布准入通过,MC-003,REVIEW
+MC-004,P4,W12,P0,Architecture,1,v0.5 架构验收,边缘数据保证说明和跨集群约束,v0.5 发布准入通过,MC-003,DONE
 RETN-002,P4,W12,P1,Backend-Governance,2,通知与审计保留策略,attempts/audit 保留任务、归档与查询边界,保留期可配置且到期清理,NOTI-001,DONE
 BUF-001,P4,W13,P1,QA,2,跨模块联调修复,回归最严重的数据源兼容问题,阶段缺陷关闭或定级,MC-004,DONE
 BUF-002,P4,W13,P1,Backend-Core,3,热点指标复盘,查 Kafka lag、SQL lock、内存峰值,下一阶段风险项可量化,MC-003,DONE
-BUF-003,P4,W14,P1,SRE,2,备份恢复和权限梳理,验证 PITR、Secret、只读权限,灾备和安全问题登记,BUF-001,REVIEW
-BUF-004,P4,W14,P0,Architecture,1,Incident 阶段准入,资源标识和关联可信度规则评审,P5 有明确输入条件,BUF-002,REVIEW
+BUF-003,P4,W14,P1,SRE,2,备份恢复和权限梳理,验证 PITR、Secret、只读权限,灾备和安全问题登记,BUF-001,DONE
+BUF-004,P4,W14,P0,Architecture,1,Incident 阶段准入,资源标识和关联可信度规则评审,P5 有明确输入条件,BUF-002,DONE
 INC-001,P5,W15,P0,Backend-Core,6,Incident 聚合实体,Incident 和 Alert 多对多、操作版本,可人工关联并拆分,BUF-004,DONE
 INC-002,P5,W15,P0,Backend-Core,5,确定性关联规则,team/service/cluster/time window,跨租户绝不合并,INC-001,DONE
 INC-003,P5,W15,P0,Frontend,3,Incident 工作台基础,列表/详情/关联证据/ACK,用户可以处置事件,INC-001,DONE
@@ -68,7 +68,7 @@ INC-005,P5,W16,P0,Backend-Governance,6,抑制、升级与值班,规则评估/升
 INC-006,P5,W16,P0,QA,3,关联误合并/升级用例,跨来源、跨团队、时间窗冲突,人工覆盖可撤销,"INC-004,INC-005",DONE
 INC-007,P5,W17,P1,Backend-Governance,5,ClickHouse 历史归档,异步 Writer/TTL/查询接口,历史查询不阻塞 PG 状态,INC-001,REVIEW
 INC-008,P5,W17,P0,Frontend,3,故障工作台时间线与升级,来源证据、时间线、升级记录,Incident 可审计与回溯,"INC-003,INC-005",DONE
-INC-009,P5,W17,P0,QA,3,v0.8 故障治理验收,真实多源样本/不误合并/可拆分,v0.8 准入通过,"INC-006,INC-008",REVIEW
+INC-009,P5,W17,P0,QA,3,v0.8 故障治理验收,真实多源样本/不误合并/可拆分,v0.8 准入通过,"INC-006,INC-008",DONE
 PERF-001,P6,W18,P0,QA,4,100 EPS 稳态 2k EPS 峰值,测 CPU/PG/Kafka/P95/P99/错误率,满足容量基线或提出明确调整,INC-009,DONE
 PERF-002,P6,W18,P0,Backend-Core,5,Processor 热点优化,行锁竞争、批量化、partition key 调整,对比压测前后指标,PERF-001,DONE
 PERF-003,P6,W18,P0,SRE,3,Kafka/PG/Edge 容量与告警,备份/保留/阈值/容量水位,可量化扩容阈值,PERF-001,DONE

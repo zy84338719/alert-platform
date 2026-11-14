@@ -578,3 +578,20 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 
 - 浏览器全视图走查：告警列表 → **告警详情**（fingerprint/labels/状态时间线 ∅→firing + 原始事件引用）→ **Incident 工作台**（US-01 标识/关联告警表/升级记录表）全部渲染，截图归档 `docs/evidence/console-{alert-detail,incident-workbench}.png`。
 - `make check` 17 包全绿、vet 干净。
+
+---
+
+## 2026-11-14 · push + CI 修复 + 批量评审推进（终态 DONE×70）
+
+### push 与 CI
+
+- gh CLI 已认证：创建**私有仓库** `github.com/zy84338719/alert-platform` 并 push（用户授权"把没完成的都完成"）。
+- **CI 首跑即抓出仓库级真 bug**：`.gitignore` 未锚定的 `alert-api` 等模式把 **cmd/ 下四个同名源码目录整个忽略**——git 里 cmd/ 只剩 2 个文件！本地文件系统完整所以全部演练正常，CI 检出后组件缺失（第一轮 `-o /out/ ./cmd/...` 静默只编 loadgen、第三轮显式路径 stat 报 directory not found）。修复=模式加 `/` 锚定根目录。
+- 顺带修复：breaking drill 的 `sed -i .bak` 跨平台语法（GNU sed 把后缀误作脚本）；Dockerfile 改显式逐二进制构建+stage 内产物自证。
+- **CI 全绿**：verify 5m35s（lint/build/breaking drill/drift/test/deps/validate）+ image 2m7s（amd64+arm64+SBOM，OCI artifact 57.5MB）。
+
+### 评审推进（证据核对式，见 planning/闸门评审记录-2026-11-14.md）
+
+- ARC-001（ADR×4 翻已接受——接受依据=决策经八轮实现实证）、ARC-004、BASE-001~004（CI run 43555832409）、BASE-008、PROC-007（解释差裁决：hz stub+手写体符合仓约定）、MVP-003、MC-004、BUF-003、BUF-004、INC-009 → **DONE×13**。
+- 保持 REVIEW×5（ING-001/NOTI-002/EDGE-003/INC-007/REL-003）——每项缺的都是人/外部资源；REL-003 的 Owner 签署是唯一留给用户的动作。
+- **终态：DONE×70 / REVIEW×5 / BLOCKED×5**。
