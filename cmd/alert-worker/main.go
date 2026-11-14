@@ -4,7 +4,12 @@
 //   - relay: committed domain_outbox rows -> Kafka lifecycle topic (PROC-003);
 //   - scheduler: source-health stale reconciliation (PROC-006).
 //
-// All three stop on app-context cancellation (graceful shutdown).
+// P1-03: every loop runs under a supervised task group — an unexpected exit
+// or panic in a CRITICAL loop (processor/relay/notifier/escalation) fails the
+// process (fail-stop, platform restarts) instead of only logging while the
+// consumer kept running; auxiliary loops (health/retention) degrade the
+// readiness probes via the background-tasks runtime check. All loops stop on
+// app-context cancellation (graceful shutdown).
 package main
 
 import (
@@ -25,6 +30,7 @@ import (
 	"github.com/example/alert-platform/internal/application/processor"
 	"github.com/example/alert-platform/internal/application/relay"
 	"github.com/example/alert-platform/internal/application/retention"
+	"github.com/example/alert-platform/internal/application/worker"
 	"github.com/example/alert-platform/internal/infrastructure/channel"
 	"github.com/example/alert-platform/internal/infrastructure/kafka"
 	"github.com/example/alert-platform/internal/infrastructure/platform"
@@ -82,35 +88,21 @@ func main() {
 			mustDurationOr(cfg.RetentionInterval, time.Hour),
 			oekitmetrics.Registry)
 
-		go func() {
-			if err := relaySvc.Run(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "relay:", err)
-			}
-		}()
-		go func() {
-			if err := healthSvc.Run(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "health scheduler:", err)
-			}
-		}()
-		go func() {
-			if err := notifySvc.Run(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "notifier:", err)
-			}
-		}()
-		go func() {
-			if err := retentionSvc.Run(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "retention:", err)
-			}
-		}()
-		// escalation ladder + auto-correlation (INC-002/005).
+		// P1-03 supervision: critical loops fail-stop, auxiliary loops degrade
+		// readiness. The readiness view joins /healthz + /readyz.
+		group := worker.NewGroup()
+		group.Go(worker.Task{Name: "relay", Critical: true, Run: relaySvc.Run})
+		group.Go(worker.Task{Name: "notifier", Critical: true, Run: notifySvc.Run})
 		escSvc := escalation.NewService(store, store)
-		go func() {
-			if err := escSvc.Run(ctx); err != nil {
-				fmt.Fprintln(os.Stderr, "escalation:", err)
-			}
-		}()
+		group.Go(worker.Task{Name: "escalation", Critical: true, Run: escSvc.Run})
+		group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
+		group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})
+		group.Go(worker.Task{Name: "processor", Critical: true, Run: func(ctx context.Context) error {
+			return consumer.Run(ctx, processorSvc.Handle)
+		}})
+		platform.RegisterRuntimeCheck("background-tasks", group.ReadinessCheck())
 
-		return consumer.Run(ctx, processorSvc.Handle)
+		return group.Run(ctx)
 	}
 
 	if err := platform.RunServiceWith(cfg, platform.ComponentWorker, version, nil, run); err != nil {
