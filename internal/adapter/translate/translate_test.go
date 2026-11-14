@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,4 +278,71 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return b
+}
+
+// P1-05 (rh-p1-05)：DeepFlow v7.2.4 基线 —— v7.2.4 golden fixtures 与 v7.2.3
+// 同构（取证：proto 双 tag sha256 一致、compare API 零 alert 路径变更，
+// 见 contracts/external/deepflow/v7.2.4/README.md），因此同一 payload 在
+// 两个版本目录下的 canonical 映射必须完全一致（差异兼容测试）。
+func TestDeepFlowV724Baseline(t *testing.T) {
+	load := func(ver, name string) []byte { return mustRead(t, filepath.Join("..", "..", "..", "contracts", "external", "deepflow", ver, "fixtures", name)) }
+
+	events724, err := DeepFlowBatch(dfTenantID, dfSourceID, clusterFallb, load("v7.2.4", "SYNTHETIC-bridge-event.json"), time.Now())
+	if err != nil {
+		t.Fatalf("v7.2.4 batch: %v", err)
+	}
+	if len(events724) == 0 {
+		t.Fatal("v7.2.4 golden fixture produced no events")
+	}
+	// 信号映射与官方枚举语义在两版本间一致。
+	if events724[0].GetSignal() != eventv1.EventSignal_EVENT_SIGNAL_FIRING {
+		t.Fatalf("v7.2.4 warning signal = %v, want FIRING", events724[0].GetSignal())
+	}
+
+	// no_data 语义一致：NO_DATA 且 severity UNSPECIFIED。
+	nodata, err := DeepFlowBatch(dfTenantID, dfSourceID, clusterFallb, load("v7.2.4", "SYNTHETIC-bridge-nodata.json"), time.Now())
+	if err != nil {
+		t.Fatalf("v7.2.4 nodata batch: %v", err)
+	}
+	if nodata[0].GetSignal() != eventv1.EventSignal_EVENT_SIGNAL_NO_DATA || nodata[0].GetSeverity() != eventv1.Severity_SEVERITY_UNSPECIFIED {
+		t.Fatalf("v7.2.4 nodata = %v/%v", nodata[0].GetSignal(), nodata[0].GetSeverity())
+	}
+
+	// negative fixtures 同样必须被拒绝。
+	negatives, err := filepath.Glob(filepath.Join("..", "..", "..", "contracts", "external", "deepflow", "v7.2.4", "fixtures", "negative", "*.json"))
+	if err != nil || len(negatives) == 0 {
+		t.Fatalf("glob v7.2.4 negatives: %v (%d)", err, len(negatives))
+	}
+	for _, path := range negatives {
+		if _, err := DeepFlowBatch(dfTenantID, dfSourceID, clusterFallb, mustRead(t, path), time.Now()); err == nil {
+			t.Errorf("v7.2.4 negative fixture %s was ACCEPTED", path)
+		}
+	}
+}
+
+// 跨版本契约等价：同一 payload（除 source_version 标注外逐字节同构）在
+// v7.2.3 与 v7.2.4 目录下的 canonical 事件字段完全一致 —— 适配族
+// deepflow/v7_2 无需任何变更即为正确升级。
+func TestDeepFlowV723V724ContractParity(t *testing.T) {
+	load := func(ver, name string) []byte {
+		b := mustRead(t, filepath.Join("..", "..", "..", "contracts", "external", "deepflow", ver, "fixtures", name))
+		// 归一 source_version 标注（fixture 自声明版本），其余逐字节相同。
+		return []byte(strings.ReplaceAll(string(b), `"7.2.4"`, `"7.2.3"`))
+	}
+	receivedAt := time.Now() // 同一时间戳：排除 received_at 差异，只比对映射
+	for _, name := range []string{"SYNTHETIC-bridge-event.json", "SYNTHETIC-bridge-event-array.json", "SYNTHETIC-bridge-nodata.json"} {
+		a, errA := DeepFlowBatch(dfTenantID, dfSourceID, clusterFallb, load("v7.2.3", name), receivedAt)
+		b, errB := DeepFlowBatch(dfTenantID, dfSourceID, clusterFallb, load("v7.2.4", name), receivedAt)
+		if errA != nil || errB != nil {
+			t.Fatalf("%s: %v / %v", name, errA, errB)
+		}
+		if len(a) != len(b) {
+			t.Fatalf("%s: event count %d vs %d", name, len(a), len(b))
+		}
+		for i := range a {
+			if a[i].String() != b[i].String() {
+				t.Errorf("%s event %d diverged between v7.2.3 and v7.2.4:\n--723--\n%s\n--724--\n%s", name, i, a[i].String(), b[i].String())
+			}
+		}
+	}
 }

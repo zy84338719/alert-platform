@@ -1,0 +1,35 @@
+# PROPOSED MAPPING. Push payload/Jinja variables still require real fixtures
+# from the target instance (enterprise feature). Field semantics below are
+# cross-checked against open-source evidence on 2026-11-12 and re-verified on
+# 2026-11-15 for v7.2.4 (see README.md — proto sha256 identical across tags,
+# compare API shows zero alert-path file changes):
+source_vendor: deepflow
+verified_vendor_version: "7.2.4"   # P7/P1-05 baseline (2026-11-15): schema byte-identical to 7.2.3, see README.md
+adapter_family: deepflow/v7_2
+contract: deepflow.bridge.v1
+verification_status: PENDING_REAL_PAYLOAD
+requirements:
+  - validate_source_instance_authentication
+  - map_real_jinja_variables_to_bridge_fields
+  - preserve_unknown_fields_in_raw_payload
+  - require_stable_policy_and_target_keys
+signal_map:
+  # Bridge string levels map 1:1 to the official numeric enum:
+  # event_level: 1=Critical 2=Error 3=Warn 4=NoData 5=Recovered 6=Info
+  critical: { signal: FIRING, severity: CRITICAL, official_event_level: 1 }
+  error:    { signal: FIRING, severity: ERROR,    official_event_level: 2 }
+  warning:  { signal: FIRING, severity: WARNING,  official_event_level: 3 }
+  no_data:  { signal: NO_DATA, severity: UNSPECIFIED, official_event_level: 4 }
+  recovery: { signal: RESOLVED, severity: UNSPECIFIED, official_event_level: 5 }
+  info:     { signal: INFO, severity: INFO, official_event_level: 6 }
+identity:
+  # Canonical names (docs/03): policy_id -> rule_id, target_key -> entity_uid.
+  fingerprint_fields: [tenant_id, source_id, policy_id, cluster_id, target_key, selected_dimension_labels]
+  fallback_event_key: [policy_id, target_key, event_level, occurred_at]
+  notes: "Fallback is only valid if event time and per-source semantics make it stable across retries."
+recovery_correlation:
+  # Official AlertEvent carries a stable event_id plus state(0=Ongoing,1=Ended)
+  # and start_time/end_time; name-only matching is forbidden (T-016).
+  preferred: [event_id]
+  secondary: [policy_id, target_key, dimension_labels, start_time]
+  forbidden: [alert_name_only]

@@ -40,6 +40,11 @@ HTTP 优先，Kafka 原生直推作为可选实现。避免向 DeepFlow 暴露�
 
 目录：`contracts/external/deepflow/v7.2.3/bridge.schema.json`（适配族 7.2.x 共用，小版本样本差异放 `fixtures/`）。
 
+**P7/P1-05（2026-11-15）：v7.2.4 基线落地。** 取证（gh api）：
+- `compare/v7.2.3...v7.2.4` 11 个变更文件均为 agent dispatcher / agent_config 文档与测试，**零** alert 路径（message/、clickhouse tag/enum/）变更；
+- `message/alert_event.proto` 双 tag sha256 **逐字节一致**（`2658e869…57`）。
+结论：v7.2.4 是运行时基线升级、payload 契约不变；`contracts/external/deepflow/v7.2.4/`（mapping/bridge.schema/golden fixtures）+ 跨版本契约等价测试（TestDeepFlowV723V724ContractParity / TestDeepFlowV724Baseline）为升级证据，适配族保持 `deepflow/v7_2` 不变。真实 Payload 验收仍挂 ARC-002。
+
 Schema 描述的是本项目希望 DeepFlow 自定义 Jinja Push 最终输出的 JSON，而非 DeepFlow 内置结构。真实接入时先获取原始样本与模板变量清单，再完成 `mapping.yaml`。字段语义现在可以对照官方 proto 命名：
 
 | Bridge 字段 | 是否必须 | 官方对应（证据） | 说明 |

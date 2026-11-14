@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/alert-contracts/deepflow/bridge/v1",
+  "title": "Proposed DeepFlow Bridge Event - NOT native DeepFlow payload",
+  "description": "Contract for a custom DeepFlow push template output. Verify every template variable against a real v7.2.3 installation.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "source_id",
+    "source_version",
+    "policy_id",
+    "event_level",
+    "alert_name",
+    "occurred_at",
+    "target_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "deepflow.bridge.v1"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_version": {
+      "type": "string",
+      "pattern": "^7\\.2\\.[0-9]+$",
+      "description": "Actual pushing instance version within adapter family v7_2 (W1 pins target minor; was const 7.2.3 before v7.2.4 release)"
+    },
+    "external_event_id": {
+      "type": "string",
+      "description": "Maps to official AlertEvent.event_id; preferred recovery correlation key"
+    },
+    "event_state": {
+      "enum": ["ongoing", "ended"],
+      "description": "Maps to official AlertEvent.state: 0=Ongoing, 1=Ended; strongly recommended for episode alignment"
+    },
+    "starts_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Maps to official AlertEvent.start_time (unix seconds); pair with ends_at for lifecycle bounds"
+    },
+    "ends_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Maps to official AlertEvent.end_time"
+    },
+    "policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_level": {
+      "enum": [
+        "critical",
+        "error",
+        "warning",
+        "recovery",
+        "info",
+        "no_data"
+      ],
+      "description": "String levels map 1:1 to official enum event_level: 1=Critical 2=Error 3=Warn 4=NoData 5=Recovered 6=Info"
+    },
+    "event_kind": {
+      "enum": [
+        "stateful",
+        "occurrence"
+      ]
+    },
+    "alert_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "target_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cluster_id": {
+      "type": "string"
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 64
+    },
+    "message": {
+      "type": "string"
+    },
+    "details_url": {
+      "type": "string",
+      "format": "uri"
+    }
+  }
+}
