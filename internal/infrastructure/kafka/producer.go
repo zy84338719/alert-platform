@@ -92,6 +92,14 @@ func (p *Producer) PublishEvent(ctx context.Context, key string, headers [][2]st
 // the messages into a single acks=all round trip, collapsing per-event
 // latency (PERF-002: batch of 50 went from ~50 sequential sync publishes to
 // one batched produce).
+//
+// P1-01 semantics: NOT an atomic whole-batch write. Messages routed to
+// different partitions ack independently — when a produce request for one
+// partition fails, messages on other partitions may already be durable, and
+// the returned error covers the failed subset only. Callers must treat this
+// as at-least-once: retry the whole batch (same transport ids) and rely on
+// consumer-side receipts for dedup (verified by
+// TestBatchPartialSuccessRetryIdempotent).
 func (p *Producer) PublishEvents(ctx context.Context, msgs []ingest.BatchMessage) error {
 	if len(msgs) == 0 {
 		return nil

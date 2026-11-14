@@ -12,11 +12,16 @@ import (
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/oekit/tracing/traceid"
+
+	domainalert "github.com/example/alert-platform/internal/domain/alert"
 )
 
 // Publisher is the outbound port implemented by the Kafka infrastructure.
-// Failure semantics: an error means NOT durably enqueued — the caller must
-// fail the request so the client retries; silent drops are forbidden.
+// Failure semantics (P1-01): an error means "not every message of the batch
+// was acknowledged" — messages MAY have partially succeeded (per-partition
+// acks), which is safe: the caller retries the whole batch with the same
+// transport ids and the consumer receipts absorb the duplicates
+// (at-least-once + consumer idempotency). Silent drops are forbidden.
 type Publisher interface {
 	PublishEvent(ctx context.Context, key string, headers [][2]string, value []byte) error
 	// PublishEvents enqueues a whole batch in one durable round trip.
@@ -57,6 +62,13 @@ func NewService(pub Publisher) *Service {
 // PushBatch validates and publishes every event of the batch. It returns the
 // durable batch id (v1: echo of the request id) only after ALL events were
 // acknowledged by the broker.
+//
+// Batch semantics (P1-01): the durable write is AT-LEAST-ONCE, not atomic —
+// kafka-go's sync batch write may partially succeed (messages that reached
+// different partitions ack independently), and the reported error can cover
+// only the failed subset. A failed PushBatch is therefore retried WHOLE by
+// the caller (same batch_id → same transport ids), and the consumer-side
+// receipts layer absorbs the redeliveries — no loss, no duplicate effects.
 func (s *Service) PushBatch(ctx context.Context, batchID string, events []*eventv1.AlertEvent) (string, error) {
 	if batchID == "" {
 		return "", fmt.Errorf("batch_id is required")
@@ -91,7 +103,7 @@ func (s *Service) PushBatch(ctx context.Context, batchID string, events []*event
 		if traceID != "" {
 			headers = append(headers, [][2]string{{hdrTraceID, traceID}}...)
 		}
-		key := ev.GetTenantId() + "|" + ev.GetSource().GetSourceId()
+		key := partitionKey(ev)
 		msgs = append(msgs, BatchMessage{Key: key, Headers: headers, Value: value})
 	}
 	// ONE durable round trip for the whole batch (PERF-002): the caller sees
@@ -101,4 +113,27 @@ func (s *Service) PushBatch(ctx context.Context, batchID string, events []*event
 		return "", err
 	}
 	return batchID, nil
+}
+
+// partitionKey (P1-01) computes the producer key: tenant + server-side logical
+// alert identity — the same logical alert keeps its ordering within one
+// partition while different alerts of the same source spread across
+// partitions (a per-source key pinned large sources to a single hotspot
+// partition, defeating Consumer Group scaling). The identity fields match
+// the processor's fingerprintOf exactly; identity-incomplete events fall
+// back to the transport-scoped tenant|source key.
+func partitionKey(ev *eventv1.AlertEvent) string {
+	fp, err := domainalert.Fingerprint(domainalert.Identity{
+		TenantID:   ev.GetTenantId(),
+		SourceID:   ev.GetSource().GetSourceId(),
+		RuleID:     ev.GetSource().GetExternalRuleId(),
+		ClusterID:  ev.GetResource().GetClusterId(),
+		EntityType: ev.GetResource().GetResourceType(),
+		EntityUID:  ev.GetResource().GetResourceUid(),
+		Dimensions: ev.GetLabels(),
+	})
+	if err == nil {
+		return ev.GetTenantId() + "|" + fp
+	}
+	return ev.GetTenantId() + "|" + ev.GetSource().GetSourceId()
 }
