@@ -187,7 +187,7 @@ eae7003253b50f8c693e4d8c44ac54a25eff7050e92104cbbe629eab7f6afa32  ./migrations/0
 fe35ed95c4af6dd0d5f9a2ce908d302a201187f4afa60e2e71e3f691e18c9cf2  ./migrations/0004_edge_leases.up.sql
 c1b353b8a27f86377aa91c4b89c3342cf35969cbf340421172a22f08696dbdc3  ./migrations/0005_edge_status.up.sql
 2e7d451e62c8025127890721a25db17c32f3ec02b54fb59e3d5a37860facf4f7  ./migrations/0006_identity_history.up.sql
-2ae5ad3827d03759efe8da6bc23a25ab86dbb81f4449f03249e312b30c1a530d  ./planning/DEVELOPMENT_LOG.md
+321c4bbbd68d603dba57eb2ace170db51060c57e4770e5ec2a75613b7c023962  ./planning/DEVELOPMENT_LOG.md
 97d2cdb288b1a12f2a3502e5f1856a649ffcddad6ff7f4c9dffddda8d11fc579  ./planning/P0-评审纪要-2026-11-13.md
 49ebcc355985d9b971cb10d46fc07e01444023fcd1787c50a81634d1d9a73ee9  ./planning/P3-v03-评审材料-2026-11-14.md
 0d609b19362aa268769df2debe74051dc7e6e6510024ccc500333bd4c1fbb556  ./planning/P5-v08-验收记录-2026-11-14.md

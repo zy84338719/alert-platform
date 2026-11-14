@@ -537,3 +537,12 @@ ARC-002（真实样本）、NOTI-002（渠道沙箱，REVIEW 中）、MVP-002（
 ### 会话总结
 
 P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE**；期间由测试/演练抓出并修复 11 个缺陷（含 3 个 S1：WAL 自死锁、DeepFlow event_key 吞恢复、hz 参数路由 404）。commit 仍未做（等授权）——首次 commit+push 后 BASE-001~004 与各 CI 证据类 REVIEW 任务可批量回填 DONE。
+
+---
+
+## 2026-11-14 · 首次 commit（用户授权后执行）
+
+- **commit `962a11d`（amend 自 429e17c）**：224 文件、27.5k 行，P0–P6 全量实现入库。清理：根目录杂散 `alert-api` 二进制删除并 gitignore、孤儿 `hz_master.pb.go` 移除、`.v2c/` 忽略。
+- **buf breaking git 基线落地**：`make idl-check` 在 origin/main 缺失时回退本地 main；红/绿双向实跑验证（删 episode_key → 精确报 `Previously present field "17" ... was deleted`；恢复 → 静默绿）。CI 的 `.git#branch=main` 形式从此在本地同样可验。
+- **lint 修正**：STANDARD 规则要求 RPC 消息名带服务前缀——`PreviewSilenceRequest/Response` → `PreviewSilencesRequest/Response`（含 rpc 签名、生成代码、handler 引用），`make idl-drift` 绿。
+- 无 remote：push 待用户提供仓库 URL；配置后 CI 首跑将产出 BASE-001~004 的流水线证据，届时批量回填。
