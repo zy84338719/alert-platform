@@ -867,31 +867,36 @@ func (s *Store) FinishNotifyTask(ctx context.Context, id string, sent bool, retr
 // SuppressNotifyAtSend re-checks silences before the actual HTTP call
 // (docs/04 §5: 发送前再次校验). Returns true when the task got suppressed.
 func (s *Store) SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error) {
-	row := s.pool.QueryRow(ctx, `
+	// P0-06: load ALL time-active candidates and suppress when ANY matches —
+	// the old LIMIT 1 returned the first arbitrary row and missed rules behind
+	// a non-matching one; the window now enforces BOTH bounds (a future,
+	// not-yet-started silence must never suppress). Matcher semantics are the
+	// same routing.MatchAll used at enqueue time.
+	rows, err := s.pool.Query(ctx, `
 		SELECT sl.id::text, sl.matchers, sl.starts_at, sl.ends_at, sl.version
 		FROM notification_outbox o
-		JOIN alert_instances i ON i.id = o.alert_instance_id
-		JOIN silences sl ON sl.tenant_id = o.tenant_id AND sl.ends_at > now()
-		WHERE o.id = $1
-		LIMIT 1`, taskID)
-	var sl routing.Silence
-	var matchers []byte
-	err := row.Scan(&sl.ID, &matchers, &sl.StartsAt, &sl.EndsAt, &sl.Version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
+		JOIN silences sl ON sl.tenant_id = o.tenant_id
+		WHERE o.id = $1 AND sl.starts_at <= now() AND sl.ends_at > now()`, taskID)
 	if err != nil {
 		return false, err
 	}
-	if err := json.Unmarshal(matchers, &sl.Matchers); err != nil {
-		return false, err
+	defer rows.Close()
+	for rows.Next() {
+		var sl routing.Silence
+		var matchers []byte
+		if err := rows.Scan(&sl.ID, &matchers, &sl.StartsAt, &sl.EndsAt, &sl.Version); err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(matchers, &sl.Matchers); err != nil {
+			return false, err
+		}
+		if routing.MatchAll(sl.Matchers, labels) {
+			_, err := s.pool.Exec(ctx, `
+				UPDATE notification_outbox SET status='suppressed', lease_until=NULL, updated_at=now() WHERE id=$1`, taskID)
+			return true, err
+		}
 	}
-	if routing.MatchAll(sl.Matchers, labels) {
-		_, err := s.pool.Exec(ctx, `
-			UPDATE notification_outbox SET status='suppressed', lease_until=NULL, updated_at=now() WHERE id=$1`, taskID)
-		return true, err
-	}
-	return false, nil
+	return false, rows.Err()
 }
 
 func nullInt(i int) any {

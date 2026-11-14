@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -36,11 +37,15 @@ func notifyEvent(transportID string, signal eventv1.EventSignal, at time.Time) *
 }
 
 func seedChannel(t *testing.T, pool *pgxpool.Pool, id string) {
+	seedChannelFor(t, pool, id, notifyTenant)
+}
+
+func seedChannelFor(t *testing.T, pool *pgxpool.Pool, id, tenant string) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(), `
 		INSERT INTO notification_channels (id, tenant_id, name, type, config, is_default)
 		VALUES ($1, $2, 'default-webhook', 'webhook', '{"webhook_url":"http://example.invalid/hook"}', true)
-		ON CONFLICT (id) DO NOTHING`, id, notifyTenant)
+		ON CONFLICT (id) DO NOTHING`, id, tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,3 +304,105 @@ func TestAuditSanitization(t *testing.T) {
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 func containsStr(s, sub string) bool { return strings.Contains(s, sub) }
+
+// P0-06 (rh-p0-06) 失败测试：发送前静默复核矩阵 ——
+// ① 两条规则：第一条不匹配、第二条匹配 → 必须抑制（修复前 LIMIT 1 只看第一条，
+//    漏抑制 → 通知静默失效）；
+// ② 尚未开始的规则 → 不抑制（修复前 SQL 只查 ends_at > now()，未来静默被当有效）；
+// ③ 已结束的规则 → 不抑制；边界时间规则 → 抑制。
+func TestSuppressNotifyAtSendMultiRuleMatrix(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	// 每个子用例独立租户 + 默认渠道：断言彼此零污染，旧代码下每条都确定性
+	// 命中目标缺陷路径（LIMIT 1 顺序无关）。
+	setupTenant := func(t *testing.T, suffix string) (tenant, channel string) {
+		t.Helper()
+		tenant = fmt.Sprintf("eeee0000-0000-0000-0000-0000000000%s", suffix)
+		channel = fmt.Sprintf("eeee0000-0000-0000-0000-00000000c0%s", suffix)
+		seedChannelFor(t, pool, channel, tenant)
+		return tenant, channel
+	}
+	pendingTask := func(t *testing.T, tenant, name string) string {
+		t.Helper()
+		ev := notifyEvent("np-p0-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+		ev.TenantId = tenant
+		ev.AlertName = name
+		ev.EventKey = "ek-" + name
+		ev.Source.ExternalRuleId = "rule-" + name // 独立指纹 → 各自 episode/task
+		if _, err := store.ApplyEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		if err := pool.QueryRow(ctx, `
+			SELECT o.id::text FROM notification_outbox o
+			JOIN alert_instances i ON i.id = o.alert_instance_id
+			WHERE i.name = $1 AND o.status='pending'`, name).Scan(&id); err != nil {
+			t.Fatalf("pending task for %s: %v", name, err)
+		}
+		return id
+	}
+
+	t.Run("second rule matches", func(t *testing.T) {
+		tenant, _ := setupTenant(t, "01")
+		taskID := pendingTask(t, tenant, "P0SixA")
+		labels := map[string]string{"ns": "demo-a"}
+		// 第一条不匹配 + 第二条匹配：修复前 LIMIT 1 拿到第一条即返回 false（漏抑制）
+		_, err := pool.Exec(ctx, `
+			INSERT INTO silences (id, tenant_id, matchers, starts_at, ends_at, created_by, reason) VALUES
+			('abab0000-0000-0000-0000-00000000e001', $1, '[{"name":"ns","operation":"EQ","value":"OTHER"}]', now()-interval '1 minute', now()+interval '1 hour', 'tester', 'no-match'),
+			('abab0000-0000-0000-0000-00000000e002', $1, '[{"name":"ns","operation":"EQ","value":"demo-a"}]', now()-interval '1 minute', now()+interval '1 hour', 'tester', 'match')`,
+			tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		suppressed, err := store.SuppressNotifyAtSend(ctx, taskID, labels)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !suppressed {
+			t.Fatal("the matching second rule must suppress (LIMIT 1 miss = leak)")
+		}
+	})
+
+	t.Run("future silence does not suppress", func(t *testing.T) {
+		tenant, _ := setupTenant(t, "02")
+		taskID := pendingTask(t, tenant, "P0SixB")
+		labels := map[string]string{"ns": "demo-b"}
+		_, err := pool.Exec(ctx, `
+			INSERT INTO silences (id, tenant_id, matchers, starts_at, ends_at, created_by, reason)
+			VALUES ('abab0000-0000-0000-0000-00000000e003', $1, '[{"name":"ns","operation":"EQ","value":"demo-b"}]', now()+interval '1 hour', now()+interval '2 hour', 'tester', 'future')`,
+			tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		suppressed, err := store.SuppressNotifyAtSend(ctx, taskID, labels)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suppressed {
+			t.Fatal("a not-yet-started silence must not suppress")
+		}
+	})
+
+	t.Run("ended silence does not suppress", func(t *testing.T) {
+		tenant, _ := setupTenant(t, "03")
+		taskID := pendingTask(t, tenant, "P0SixC")
+		labels := map[string]string{"ns": "demo-c"}
+		_, err := pool.Exec(ctx, `
+			INSERT INTO silences (id, tenant_id, matchers, starts_at, ends_at, created_by, reason)
+			VALUES ('abab0000-0000-0000-0000-00000000e004', $1, '[{"name":"ns","operation":"EQ","value":"demo-c"}]', now()-interval '2 hour', now()-interval '1 minute', 'tester', 'ended')`,
+			tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		suppressed, err := store.SuppressNotifyAtSend(ctx, taskID, labels)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suppressed {
+			t.Fatal("an ended silence must not suppress")
+		}
+	})
+}
