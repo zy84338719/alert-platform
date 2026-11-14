@@ -80,9 +80,17 @@ type BaseStore struct {
 	tasks []Task
 }
 
-func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Duration) ([]Task, error) {
-	out := b.tasks
-	b.tasks = nil
+func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Duration, createdAfter time.Time) ([]Task, error) {
+	// Model the real store's P0-07 cutoff: shadow-era tasks (enqueued before
+	// the ownership moment) are never claimed.
+	out := make([]Task, 0, len(b.tasks))
+	for _, t := range b.tasks {
+		if !createdAfter.IsZero() && !t.CreatedAt.IsZero() && !t.CreatedAt.After(createdAfter) {
+			continue
+		}
+		out = append(out, t)
+	}
+	b.tasks = out[len(out):]
 	if len(out) > limit {
 		b.tasks = out[limit:]
 		return out[:limit], nil
@@ -90,8 +98,8 @@ func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Durati
 	return out, nil
 }
 
-func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error) {
-	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease)
+func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]Task, error) {
+	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease, createdAfter)
 	m.claimed = append(m.claimed, tasks...)
 	return tasks, err
 }
@@ -116,4 +124,55 @@ func (m *modeStore) FinishNotifyTask(_ context.Context, id string, sent bool, _ 
 
 func (m *BaseStore) SuppressNotifyAtSend(context.Context, string, map[string]string) (bool, error) {
 	return false, nil
+}
+
+// P0-07 (rh-p0-07) 失败测试：shadow→active 切换不得补发 shadow 历史任务 ——
+// shadow 期间产生的 pending 任务（历史观察任务）在新所有权生效后不被 claim，
+// 新任务正常投递；从未进入 shadow 的部署（cutoff 零值）保持全量 claim 兼容。
+func TestShadowToActiveNoHistoryReplay(t *testing.T) {
+	ctx := context.Background()
+	st := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(st, sender)
+
+	// ① shadow 期间：历史任务被记录、不被 claim。
+	svc.SetMode(ModeShadow)
+	shadowEra := time.Now().Add(-time.Second)
+	st.tasks = []Task{{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), CreatedAt: shadowEra}}
+	svc.DeliverOnce(ctx)
+	if sender.sent != 0 || len(st.claimed) != 0 {
+		t.Fatalf("shadow phase: sent=%d claimed=%d", sender.sent, len(st.claimed))
+	}
+
+	// ② 切 active：所有权生效时间 = 切换时刻。
+	svc.SetMode(ModeActive)
+
+	// ③ 新任务正常投递；shadow 历史任务不被补发。
+	st.tasks = []Task{
+		{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), CreatedAt: shadowEra},
+		{ID: "fresh-task", Attempts: 1, Payload: []byte(`{}`), CreatedAt: time.Now()},
+	}
+	svc.DeliverOnce(ctx)
+	if sender.sent != 1 {
+		t.Fatalf("sent = %d, want 1 (only the fresh task)", sender.sent)
+	}
+	if len(st.claimed) != 1 || st.claimed[0].ID != "fresh-task" {
+		t.Fatalf("claimed = %v, want [fresh-task] — shadow history must not replay (notification storm)", st.claimed)
+	}
+}
+
+// 从未进入 shadow 的部署：cutoff 零值 → 全量 claim（行为兼容）。
+func TestActiveWithoutShadowClaimsAll(t *testing.T) {
+	ctx := context.Background()
+	st := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(st, sender) // 默认 active，从未 shadow
+	st.tasks = []Task{
+		{ID: "old-backlog", Attempts: 1, Payload: []byte(`{}`), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "new", Attempts: 1, Payload: []byte(`{}`), CreatedAt: time.Now()},
+	}
+	svc.DeliverOnce(ctx)
+	if sender.sent != 2 || len(st.claimed) != 2 {
+		t.Fatalf("sent=%d claimed=%d, want 2/2 (no shadow cutoff engaged)", sender.sent, len(st.claimed))
+	}
 }

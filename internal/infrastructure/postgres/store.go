@@ -787,7 +787,9 @@ type NotifyTask = notify.Task
 // ClaimNotifyTasks claims pending/retrying tasks with FOR UPDATE SKIP LOCKED
 // plus a lease; expired leases (crashed senders) are re-claimed and their
 // attempts counter keeps climbing — at-least-once with an audit trail.
-func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]notify.Task, error) {
+// createdAfter (P0-07) excludes shadow-era tasks enqueued before the
+// notification-ownership moment (zero time = no cutoff).
+func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]notify.Task, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, err
@@ -797,9 +799,10 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 		WITH claimed AS (
 			SELECT o.id FROM notification_outbox o
 			JOIN notification_channels c ON c.id = o.channel_id AND c.enabled
-			WHERE (o.status IN ('pending','retry_scheduled') AND o.next_attempt_at <= now()
-			       AND (o.lease_until IS NULL OR o.lease_until < now()))
-			   OR (o.status = 'sending' AND o.lease_until < now())
+			WHERE ((o.status IN ('pending','retry_scheduled') AND o.next_attempt_at <= now()
+			        AND (o.lease_until IS NULL OR o.lease_until < now()))
+			    OR (o.status = 'sending' AND o.lease_until < now()))
+			  AND ($4::timestamptz IS NULL OR o.created_at > $4)
 			ORDER BY o.next_attempt_at
 			LIMIT $1
 			FOR UPDATE OF o SKIP LOCKED
@@ -808,16 +811,17 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 		SET status='sending', lease_owner=$2, lease_until=now()+$3::interval, attempts=attempts+1, updated_at=now()
 		FROM claimed WHERE o.id = claimed.id
 		RETURNING o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
+			o.created_at,
 			(SELECT type FROM notification_channels c WHERE c.id = o.channel_id),
 			(SELECT config FROM notification_channels c WHERE c.id = o.channel_id)`,
-		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())))
+		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())), nullTime(createdAfter))
 	if err != nil {
 		return nil, err
 	}
 	var out []notify.Task
 	for rows.Next() {
 		var t notify.Task
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.ChannelType, &t.ChannelCfg); err != nil {
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.ChannelType, &t.ChannelCfg); err != nil {
 			rows.Close()
 			return nil, err
 		}

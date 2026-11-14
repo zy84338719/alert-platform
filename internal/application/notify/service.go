@@ -22,11 +22,15 @@ type Task struct {
 	ChannelCfg  []byte
 	Payload     []byte
 	Attempts    int
+	CreatedAt   time.Time // enqueue time (P0-07 shadow-history cutoff)
 }
 
 // Store is the notification persistence port (infrastructure/postgres).
 type Store interface {
-	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error)
+	// ClaimNotifyTasks claims due tasks; createdAfter (P0-07) excludes tasks
+	// enqueued before the notification-ownership moment — the shadow→active
+	// switch must never auto-replay shadow-era history. Zero time = no cutoff.
+	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]Task, error)
 	FinishNotifyTask(ctx context.Context, id string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
 	// PeekNotifyTasks lists pending tasks WITHOUT claiming or mutating them
@@ -69,6 +73,10 @@ type Service struct {
 	lease    time.Duration
 	batch    int
 	mode     string
+	// shadowCutoff (P0-07): the moment notification ownership last returned to
+	// active from shadow. Tasks enqueued before it are shadow-era observations
+	// and are never auto-claimed; zero = ownership never switched (claim all).
+	shadowCutoff time.Time
 }
 
 // NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
@@ -78,10 +86,17 @@ func NewService(store Store, sender Sender) *Service {
 }
 
 // SetMode switches delivery authority (REL-001): shadow keeps an auditable
-// record of what WOULD have been sent, active pages for real.
+// record of what WOULD have been sent, active pages for real. P0-07: leaving
+// shadow for active moves the ownership cutoff forward — shadow-era pending
+// tasks are historical observations, NOT a delivery backlog; auto-replaying
+// them would storm every channel the upstream already notified (or the
+// platform only observed). Fresh transitions after the switch deliver.
 func (s *Service) SetMode(mode string) {
 	switch mode {
 	case ModeActive, ModeShadow, ModeOff:
+		if mode == ModeActive && s.mode == ModeShadow {
+			s.shadowCutoff = time.Now()
+		}
 		s.mode = mode
 	}
 }
@@ -126,7 +141,7 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 	if s.mode == ModeShadow {
 		return s.shadowOnce(ctx)
 	}
-	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease)
+	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease, s.shadowCutoff)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "notify claim failed", logx.ErrKey, err)

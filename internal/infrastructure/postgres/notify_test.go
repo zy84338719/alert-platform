@@ -76,7 +76,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 2) claim (SKIP LOCKED) marks sending + bumps attempts.
-	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("claim: %v (%d)", err, len(tasks))
 	}
@@ -84,7 +84,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		t.Fatalf("claimed task: %+v", tasks[0])
 	}
 	// A second claim while the lease is live finds nothing (no double send).
-	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
 	if err != nil || len(again) != 0 {
 		t.Fatalf("double claim leaked tasks: %v (%d)", err, len(again))
 	}
@@ -94,7 +94,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		UPDATE notification_outbox SET lease_until = now() - interval '2 hours' WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+	reclaimed, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
 	if err != nil || len(reclaimed) != 1 {
 		t.Fatalf("lease-expiry reclaim: %v (%d)", err, len(reclaimed))
 	}
@@ -405,4 +405,67 @@ func TestSuppressNotifyAtSendMultiRuleMatrix(t *testing.T) {
 			t.Fatal("an ended silence must not suppress")
 		}
 	})
+}
+
+// P0-07 (rh-p0-07)：真实 PG 上的 claim 截断 —— createdAfter 之前的
+// shadow 时代任务不被 claim（切换所有权后不补发历史），零值 cutoff 全量
+// claim（从未进入 shadow 的部署行为兼容）。
+func TestClaimNotifyTasksCreatedAfterCutoff(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	// 两个独立指纹 → 两个 pending 任务；一个把 created_at 回拨到 1 小时前。
+	mkTask := func(t *testing.T, name string) {
+		t.Helper()
+		ev := notifyEvent("np-cut-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+		ev.AlertName = name
+		ev.EventKey = "ek-" + name
+		ev.Source.ExternalRuleId = "rule-" + name
+		if _, err := store.ApplyEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkTask(t, "CutOld")
+	mkTask(t, "CutNew")
+	if _, err := pool.Exec(ctx, `
+		UPDATE notification_outbox o SET created_at = now() - interval '1 hour'
+		FROM alert_instances i WHERE i.id = o.alert_instance_id AND i.name = 'CutOld'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 零值 cutoff：两个都可领。
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("zero cutoff claimed %d, want 2", len(tasks))
+	}
+	// 释放（回滚 sending 状态）：直接改回 pending。
+	if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET status='pending', lease_until=NULL`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 截断 cutoff：1 小时前的 shadow 时代任务不可领。
+	cutoff := time.Now().Add(-30 * time.Minute)
+	tasks, err = store.ClaimNotifyTasks(ctx, 10, time.Minute, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID == "" {
+		t.Fatalf("cutoff claimed %d tasks, want 1 (only the fresh one)", len(tasks))
+	}
+	var name string
+	if err := pool.QueryRow(ctx, `
+		SELECT i.name FROM alert_instances i
+		JOIN notification_outbox o ON o.alert_instance_id = i.id
+		WHERE o.id = $1`, tasks[0].ID).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "CutNew" {
+		t.Fatalf("claimed %q, want CutNew — the shadow-era task must not replay", name)
+	}
 }
