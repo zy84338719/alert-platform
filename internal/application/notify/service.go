@@ -29,6 +29,13 @@ type Store interface {
 	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error)
 	FinishNotifyTask(ctx context.Context, id string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
+	// PeekNotifyTasks lists pending tasks WITHOUT claiming or mutating them
+	// (REL-001 shadow mode: the would-have-sent trail must not disturb the
+	// delivery queue state machine).
+	PeekNotifyTasks(ctx context.Context, limit int) ([]Task, error)
+	// RecordShadowDelivery writes one audited would-have-sent record; the
+	// same task is only recorded once (idempotent per task).
+	RecordShadowDelivery(ctx context.Context, taskID string) (bool, error)
 }
 
 // Sender delivers one payload (infrastructure/channel).
@@ -116,6 +123,9 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 	if s.mode == ModeOff {
 		return 0
 	}
+	if s.mode == ModeShadow {
+		return s.shadowOnce(ctx)
+	}
 	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -124,17 +134,38 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 		return 0
 	}
 	for _, t := range tasks {
-		if s.mode == ModeShadow {
-			// Shadow: record the suppressed attempt (auditable would-have-sent
-			// trail for reconciliation) without touching the channel.
-			if err := s.store.FinishNotifyTask(ctx, t.ID, false, 0, t.Attempts, 0, "shadow", "suppressed: shadow mode"); err != nil {
-				logx.CtxError(ctx, "shadow finish failed", logx.ErrKey, err, "task", t.ID)
-			}
-			continue
-		}
 		s.deliverOne(ctx, t)
 	}
 	return len(tasks)
+}
+
+// shadowOnce records the would-have-sent trail WITHOUT claiming: tasks stay
+// pending and untouched, so a later switch to active delivers them exactly
+// once through the normal path (REL-001 无双发/不丢不重发).
+func (s *Service) shadowOnce(ctx context.Context) int {
+	tasks, err := s.store.PeekNotifyTasks(ctx, s.batch)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.CtxError(ctx, "shadow peek failed", logx.ErrKey, err)
+		}
+		return 0
+	}
+	n := 0
+	for _, t := range tasks {
+		recorded, err := s.store.RecordShadowDelivery(ctx, t.ID)
+		if err != nil {
+			logx.CtxError(ctx, "shadow record failed", logx.ErrKey, err, "task", t.ID)
+			continue
+		}
+		if recorded {
+			n++
+		}
+	}
+	if n > 0 {
+		logx.CtxInfo(ctx, "shadow mode: would-have-sent recorded (tasks untouched)",
+			"component", "alert-worker", "recorded", n)
+	}
+	return n
 }
 
 func (s *Service) deliverOne(ctx context.Context, t Task) {

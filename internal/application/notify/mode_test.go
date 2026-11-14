@@ -10,6 +10,7 @@ type modeStore struct {
 	BaseStore
 	claimed  []Task
 	finished []Finish
+	shadowed []string
 }
 
 type Finish struct {
@@ -38,15 +39,22 @@ func TestNotifyModes(t *testing.T) {
 		t.Fatalf("active mode: sender=%d finished=%+v", sender.sent, st.finished)
 	}
 
-	// SHADOW: claimed and recorded as suppressed, never sent.
+	// SHADOW: recorded to the audit trail, tasks NOT claimed and NOT mutated —
+	// the queue stays pending so a later switch to active delivers exactly once.
 	svc, st, sender = newSvc(ModeShadow)
 	st.tasks = []Task{{ID: "t2", Attempts: 1, Payload: []byte(`{}`)}}
 	svc.DeliverOnce(context.Background())
 	if sender.sent != 0 {
 		t.Fatalf("shadow mode sent %d notifications (double-send risk!)", sender.sent)
 	}
-	if len(st.finished) != 1 || st.finished[0].Failure != "shadow" {
-		t.Fatalf("shadow mode finished=%+v, want one shadow-suppressed record", st.finished)
+	if len(st.finished) != 0 {
+		t.Fatalf("shadow mode mutated delivery state: %+v", st.finished)
+	}
+	if len(st.shadowed) != 1 || st.shadowed[0] != "t2" {
+		t.Fatalf("shadow audit records = %v, want [t2]", st.shadowed)
+	}
+	if len(st.claimed) != 0 {
+		t.Fatalf("shadow mode claimed tasks: %v", st.claimed)
 	}
 
 	// OFF: nothing claimed, nothing sent.
@@ -86,6 +94,19 @@ func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.
 	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease)
 	m.claimed = append(m.claimed, tasks...)
 	return tasks, err
+}
+
+func (m *modeStore) PeekNotifyTasks(_ context.Context, limit int) ([]Task, error) {
+	out := m.tasks
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (m *modeStore) RecordShadowDelivery(_ context.Context, taskID string) (bool, error) {
+	m.shadowed = append(m.shadowed, taskID)
+	return true, nil
 }
 
 func (m *modeStore) FinishNotifyTask(_ context.Context, id string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string) error {

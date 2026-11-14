@@ -75,7 +75,7 @@ PERF-003,P6,W18,P0,SRE,3,Kafka/PG/Edge 容量与告警,备份/保留/阈值/容�
 SYS-001,P6,W18,P2,Frontend,3,系统管理页面,租户/授权/审计只读视图,管理员可审计操作历史,AUTH-002,DONE
 CHAOS-001,P6,W19,P0,QA,4,基础设施混沌演练,Kill pod/PG failover/broker/network,事件未静默丢失且可恢复,PERF-002,DONE
 CHAOS-002,P6,W19,P0,SRE,3,灾备恢复与安全评审,PITR/SSRF/mTLS/Secret/RBAC,发布检查清单达标,CHAOS-001,DONE
-CHAOS-003,P6,W19,P0,Architecture,2,RC 审查和变更冻结,P0/P1 缺陷/Schema breaking/回滚方案,确定 v1.0 RC,CHAOS-002,REVIEW
+CHAOS-003,P6,W19,P0,Architecture,2,RC 审查和变更冻结,P0/P1 缺陷/Schema breaking/回滚方案,确定 v1.0 RC,CHAOS-002,DONE
 REL-001,P6,W20,P0,SRE,3,Shadow 与渐进式切换,按规则小比例接管通知/监测双发,可回滚上游通知权,CHAOS-003,DONE
-REL-002,P6,W20,P0,QA,3,生产对账与回滚演练,告警数量、恢复、通知、事故流,差异可解释且无阻断缺陷,REL-001,REVIEW
+REL-002,P6,W20,P0,QA,3,生产对账与回滚演练,告警数量、恢复、通知、事故流,差异可解释且无阻断缺陷,REL-001,DONE
 REL-003,P6,W20,P0,Architecture,3,Go/No-Go 评审与 v1.0 发布,SLO、可靠性、审计、培训与移交,签署验收、归档和运维交接,REL-002,REVIEW

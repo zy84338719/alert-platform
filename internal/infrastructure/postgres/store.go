@@ -1202,3 +1202,59 @@ func (s *Store) CorrelateOnce(ctx context.Context) (int, error) {
 	}
 	return merged, nil
 }
+
+// PeekNotifyTasks lists pending tasks without claiming (notify shadow mode).
+func (s *Store) PeekNotifyTasks(ctx context.Context, limit int) ([]notify.Task, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
+		       c.type, c.config
+		FROM notification_outbox o
+		JOIN notification_channels c ON c.id = o.channel_id AND c.enabled
+		WHERE o.status = 'pending' AND o.next_attempt_at <= now()
+		ORDER BY o.next_attempt_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []notify.Task
+	for rows.Next() {
+		var t notify.Task
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts,
+			&t.ChannelType, &t.ChannelCfg); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RecordShadowDelivery writes one audited would-have-sent record; idempotent
+// per task (the audit row IS the dedup ledger, same pattern as incident.ack).
+func (s *Store) RecordShadowDelivery(ctx context.Context, taskID string) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var existing int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM audit_logs
+		WHERE operation='notify.shadow_would_send' AND details->>'shadow_task'=$1`, taskID).Scan(&existing); err != nil {
+		return false, err
+	}
+	if existing > 0 {
+		return false, nil
+	}
+	var tenant string
+	if err := tx.QueryRow(ctx, `SELECT tenant_id::text FROM notification_outbox WHERE id=$1`, taskID).Scan(&tenant); err != nil {
+		return false, err
+	}
+	raw, _ := json.Marshal(map[string]any{"shadow_task": taskID})
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_logs (id, tenant_id, actor_id, operation, object_type, object_id, details)
+		VALUES ($1,$2,'system','notify.shadow_would_send','notification',$3,$4::jsonb)`,
+		uuid.NewString(), tenant, taskID, raw); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}

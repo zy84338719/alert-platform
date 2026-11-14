@@ -546,3 +546,19 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - **buf breaking git 基线落地**：`make idl-check` 在 origin/main 缺失时回退本地 main；红/绿双向实跑验证（删 episode_key → 精确报 `Previously present field "17" ... was deleted`；恢复 → 静默绿）。CI 的 `.git#branch=main` 形式从此在本地同样可验。
 - **lint 修正**：STANDARD 规则要求 RPC 消息名带服务前缀——`PreviewSilenceRequest/Response` → `PreviewSilencesRequest/Response`（含 rpc 签名、生成代码、handler 引用），`make idl-drift` 绿。
 - 无 remote：push 待用户提供仓库 URL；配置后 CI 首跑将产出 BASE-001~004 的流水线证据，届时批量回填。
+
+---
+
+## 2026-11-14 · REL-002 对账与回滚演练（PASS）+ shadow 语义修复
+
+### 本轮变更
+
+- **`scripts/drill_rel002.sh`** 四阶段真实进程演练：① shadow（5 告警→任务全 pending、外发 0、审计 5 条）→ ② shadow_compare 对账（5/5 命中、report.json）→ ③ 切 active（新告警真实送达）→ ④ 回滚（shadow 期新任务积压 pending 不丢不外发 → 恢复 active 补投恰 1 次）。
+- **shadow 语义修复（演练抓出的真 bug）**：原实现 claim 任务后以 failure='shadow' 结束——把任务推进 retry_scheduled 无限循环并污染队列状态。改为 **peek+审计**：`PeekNotifyTasks`（不 claim）+ `RecordShadowDelivery`（audit_logs 幂等台账，同 ack 模式）；任务保持 pending 原样，切回 active 后经正常路径恰好投递一次。`TestNotifyModes` 同步更新。
+- 演练编排修正：积压验证对象必须在切 shadow 后 push（active 期 push 会被正常投递，非双发）。
+
+### 验证
+
+- **REL-002 DRILL PASS** 四阶段全绿；`make check` 17 包全绿。
+- backlog：REL-002 → DONE；CHAOS-003 三条件（缺陷全闭/breaking 基线绿/回滚演练过）→ **DONE**。
+- 终态：**DONE×57 / REVIEW×18 / BLOCKED×5**。
