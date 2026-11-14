@@ -1,0 +1,14 @@
+﻿risk_id,risk,probability,impact,review_window,owner,mitigation
+R01,DeepFlow push ability requires enterprise authorization,High,High,P0/W1,Monitoring-owner,"Gather real events from target instance; fallback Prometheus metrics route (see docs/06 §6)"
+R02,DeepFlow native schema Jinja fields differ,High,High,W1/W4,Backend-Integration,Golden fixtures + mapping + contract CI; map official event_level/state enums
+R03,Alertmanager webhook is not raw change feed,Medium,High,W4,Backend-Core,Define mirror semantics and source reconciliation
+R04,HUATUO SSE lacks confirmed replay,High,Medium,W11,Backend-Integration,Gap alarms and explicit at-most-source-coverage boundary
+R05,Edge one-disk WAL not highly available,Medium,High,W10,SRE,PVC policy/replicated queue if business requires regional no-loss
+R06,Duplicate notifications during cutover,High,High,W9/W20,SRE,Shadow then single ownership by route
+R07,PG hot row and high cardinality,Medium,High,W18,Backend-Core,"Load tests, partitioning and indexes"
+R08,Understaffed Go team,Medium,High,W1,PM,"Backlog re-baselined 2026-11-12 (integration buffer included; Go utilization 59% avg / 93% peak). Track weekly burn-up; if only 1-2 Go use scope-cut list in docs/10"
+R09,Weak cross-region network,High,Medium,W12,Backend-Integration,"Persistent Edge queue, source isolation and draining"
+R10,Premature AI agent integration,Low,Medium,W15,Architecture,Keep OAgentKit out of synchronous core lifecycle
+R11,SRE single point during release window W18-W20,Medium,High,W18,SRE,"SRE staffed 1.0 for W18-W20 (release/chaos/cutover); handover runbook reviewed at W17"
+R12,Vendor minor releases outpace locked adapter version (v7.2.4 published 2026-11-12),Medium,Medium,W1/W4,Backend-Integration,"W1 pins target minor (7.2.3 verified vs 7.2.4 latest); re-sample fixtures per vendor upgrade; adapter family deepflow/v7_2 isolates delta"
+R13,Estimation drift re-accumulates after re-baseline,Medium,Medium,weekly,PM,"Weekly milestone review compares burn-up vs plan; W13/W14 kept free of new scope as shock absorber"

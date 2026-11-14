@@ -1,0 +1,56 @@
+syntax = "proto3";
+package alert.silence.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/silence/v1;silencev1";
+import "google/protobuf/timestamp.proto";
+import "alert/policy/v1/policy.proto";
+import "api/api.proto";
+
+message Silence {
+  string silence_id = 1;
+  string tenant_id = 2;
+  repeated alert.policy.v1.LabelMatcher matchers = 3;
+  google.protobuf.Timestamp starts_at = 4;
+  google.protobuf.Timestamp ends_at = 5;
+  string created_by = 6;
+  string reason = 7;
+  uint64 version = 8;
+}
+message CreateSilenceRequest {
+  string request_id = 1;
+  repeated alert.policy.v1.LabelMatcher matchers = 2;
+  google.protobuf.Timestamp starts_at = 3;
+  google.protobuf.Timestamp ends_at = 4;
+  string reason = 5;
+}
+message CreateSilenceResponse { Silence silence = 1; }
+message ListSilencesRequest { bool include_expired = 1 [(api.query) = "include_expired"]; }
+message ListSilencesResponse { repeated Silence silences = 1; }
+message RevokeSilenceRequest { string silence_id = 1 [(api.path) = "silence_id"]; }
+message RevokeSilenceResponse { Silence silence = 1; }
+// 命中模拟器：labels 进，可解释结果出（哪条 matcher 命中/未命中）。
+message PreviewSilencesRequest {
+  map<string, string> labels = 1;
+  google.protobuf.Timestamp at = 2;
+}
+message PreviewSilenceMatch {
+  string silence_id = 1;
+  bool silenced = 2;
+  repeated string matched = 3;
+  repeated string unmatched = 4;
+}
+message PreviewSilencesResponse { repeated PreviewSilenceMatch matches = 1; }
+
+service SilenceService {
+  rpc CreateSilence(CreateSilenceRequest) returns (CreateSilenceResponse) {
+    option (api.post) = "/policies/v1/silences";
+  }
+  rpc ListSilences(ListSilencesRequest) returns (ListSilencesResponse) {
+    option (api.get) = "/policies/v1/silences";
+  }
+  rpc RevokeSilence(RevokeSilenceRequest) returns (RevokeSilenceResponse) {
+    option (api.post) = "/policies/v1/silences/{silence_id}/revoke";
+  }
+  rpc PreviewSilences(PreviewSilencesRequest) returns (PreviewSilencesResponse) {
+    option (api.post) = "/policies/v1/silences/preview";
+  }
+}

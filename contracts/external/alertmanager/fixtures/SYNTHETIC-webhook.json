@@ -1,0 +1,32 @@
+{
+  "receiver": "alert-platform",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighRequestLatency",
+        "severity": "warning",
+        "namespace": "demo"
+      },
+      "annotations": {
+        "summary": "synthetic example"
+      },
+      "startsAt": "2026-11-12T10:00:00+08:00",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://example.invalid/prometheus/graph",
+      "fingerprint": "fakefingerprint"
+    }
+  ],
+  "groupLabels": {
+    "alertname": "HighRequestLatency"
+  },
+  "commonLabels": {
+    "alertname": "HighRequestLatency"
+  },
+  "commonAnnotations": {},
+  "externalURL": "https://example.invalid/alertmanager",
+  "version": "4",
+  "groupKey": "synthetic-group-key",
+  "truncatedAlerts": 0
+}

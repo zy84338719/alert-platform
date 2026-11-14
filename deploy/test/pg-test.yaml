@@ -1,0 +1,68 @@
+# Ephemeral PostgreSQL for integration tests (BASE-005) on the rpi-k3s test
+# cluster. Used via the external-DSN mode of internal/infrastructure/postgres
+# tests: ALERT_TEST_PG_DSN=postgres://postgres:test@10.10.10.20:30543/postgres?sslmode=disable
+#
+# When the local Docker port-forwarding stack works, tests use Testcontainers
+# instead and this deployment is unnecessary. NodePort is within the
+# alert-platform ns NodePort<=10 quota.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg-test
+  namespace: alert-platform
+  labels:
+    app: pg-test
+    purpose: integration-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pg-test
+  template:
+    metadata:
+      labels:
+        app: pg-test
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_PASSWORD
+              value: "test"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata # keep data off the volume root (local-path quirk)
+          ports:
+            - containerPort: 5432
+              name: pg
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi # ns LimitRange caps single container at 1 CPU / 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-test
+  namespace: alert-platform
+spec:
+  type: NodePort
+  selector:
+    app: pg-test
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30543

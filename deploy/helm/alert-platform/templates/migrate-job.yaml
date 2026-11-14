@@ -1,0 +1,27 @@
+{{- if .Values.migrate.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "alert-platform.fullname" . }}-migrate
+  labels: {{- include "alert-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    # re-run on every upgrade (idempotent by design)
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/alert-migrate"]
+          env:
+            {{- range $k, $v := .Values.migrate.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+{{- end }}

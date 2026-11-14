@@ -1,0 +1,172 @@
+// Package notify implements the notification outbox worker (NOTI-001):
+// claim (SKIP LOCKED + lease) -> silence re-check -> send -> outcome record.
+// Delivery is at-least-once with per-attempt audit rows; crashed senders'
+// leases expire and tasks re-claim with an incremented attempts counter.
+package notify
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/oekit/logx"
+)
+
+// Task is one claimed notification (application-level view).
+type Task struct {
+	ID          string
+	TenantID    string
+	ChannelID   string
+	ReceiverID  string
+	ChannelType string
+	ChannelCfg  []byte
+	Payload     []byte
+	Attempts    int
+}
+
+// Store is the notification persistence port (infrastructure/postgres).
+type Store interface {
+	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error)
+	FinishNotifyTask(ctx context.Context, id string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
+	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
+}
+
+// Sender delivers one payload (infrastructure/channel).
+type Sender interface {
+	Send(ctx context.Context, channelType string, cfg []byte, payload []byte) SendResult
+}
+
+// SendResult mirrors channel.SendResult without importing infrastructure.
+type SendResult struct {
+	Sent        bool
+	HTTPStatus  int
+	RetryAfter  time.Duration
+	FailureCode string
+	Err         string
+}
+
+// Delivery modes (REL-001 渐进切换): active sends; shadow records every
+// delivery attempt but suppresses the actual send (the upstream system keeps
+// notification authority — no double-send); off leaves tasks queued.
+const (
+	ModeActive = "active"
+	ModeShadow = "shadow"
+	ModeOff    = "off"
+)
+
+// Service runs the notify loop.
+type Service struct {
+	store    Store
+	sender   Sender
+	interval time.Duration
+	lease    time.Duration
+	batch    int
+	mode     string
+}
+
+// NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
+// mode active.
+func NewService(store Store, sender Sender) *Service {
+	return &Service{store: store, sender: sender, interval: 500 * time.Millisecond, lease: time.Minute, batch: 50, mode: ModeActive}
+}
+
+// SetMode switches delivery authority (REL-001): shadow keeps an auditable
+// record of what WOULD have been sent, active pages for real.
+func (s *Service) SetMode(mode string) {
+	switch mode {
+	case ModeActive, ModeShadow, ModeOff:
+		s.mode = mode
+	}
+}
+
+// SetTuning overrides loop parameters (wiring/tests).
+func (s *Service) SetTuning(interval, lease time.Duration, batch int) {
+	if interval > 0 {
+		s.interval = interval
+	}
+	if lease > 0 {
+		s.lease = lease
+	}
+	if batch > 0 {
+		s.batch = batch
+	}
+}
+
+// Run delivers until ctx is done.
+func (s *Service) Run(ctx context.Context) error {
+	logx.CtxInfo(ctx, "notification worker started", "interval", s.interval.String())
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			s.deliverBatch(ctx)
+		}
+	}
+}
+
+// DeliverOnce processes one batch synchronously (tests/ops tooling).
+func (s *Service) DeliverOnce(ctx context.Context) int {
+	return s.deliverBatch(ctx)
+}
+
+func (s *Service) deliverBatch(ctx context.Context) int {
+	if s.mode == ModeOff {
+		return 0
+	}
+	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.CtxError(ctx, "notify claim failed", logx.ErrKey, err)
+		}
+		return 0
+	}
+	for _, t := range tasks {
+		if s.mode == ModeShadow {
+			// Shadow: record the suppressed attempt (auditable would-have-sent
+			// trail for reconciliation) without touching the channel.
+			if err := s.store.FinishNotifyTask(ctx, t.ID, false, 0, t.Attempts, 0, "shadow", "suppressed: shadow mode"); err != nil {
+				logx.CtxError(ctx, "shadow finish failed", logx.ErrKey, err, "task", t.ID)
+			}
+			continue
+		}
+		s.deliverOne(ctx, t)
+	}
+	return len(tasks)
+}
+
+func (s *Service) deliverOne(ctx context.Context, t Task) {
+	// Silence re-check at send time (docs/04 §5); the labels travel in the
+	// routing payload snapshot taken at enqueue time.
+	var p struct {
+		Labels map[string]string `json:"labels"`
+	}
+	_ = json.Unmarshal(t.Payload, &p)
+	if suppressed, err := s.store.SuppressNotifyAtSend(ctx, t.ID, p.Labels); err != nil {
+		logx.CtxError(ctx, "silence re-check failed", logx.ErrKey, err, "task", t.ID)
+	} else if suppressed {
+		logx.CtxInfo(ctx, "notification suppressed by silence at send time", "task", t.ID)
+		return
+	}
+
+	res := s.sender.Send(ctx, t.ChannelType, t.ChannelCfg, t.Payload)
+	if err := s.store.FinishNotifyTask(ctx, t.ID, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
+		logx.CtxError(ctx, "notify finish failed (attempt row may be missing)", logx.ErrKey, err, "task", t.ID)
+	}
+	if res.Sent {
+		logx.CtxInfo(ctx, "notification delivered",
+			"component", "alert-worker", "task", t.ID, "channel_type", t.ChannelType,
+			"attempt", t.Attempts, "http_status", res.HTTPStatus)
+		return
+	}
+	outcome := "failed-" + res.FailureCode
+	if res.RetryAfter > 0 {
+		outcome = "retry-after-" + res.RetryAfter.String()
+	}
+	logx.CtxWarn(ctx, "notification attempt failed",
+		"component", "alert-worker", "task", t.ID, "channel_type", t.ChannelType,
+		"attempt", t.Attempts, "outcome", outcome, "http_status", res.HTTPStatus,
+		logx.ErrKey, res.Err)
+}

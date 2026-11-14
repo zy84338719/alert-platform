@@ -1,0 +1,16 @@
+# Dev baseline for all three binaries (BASE-002/006).
+# Precedence: env (env tags in platform.Config) > this file > default tags.
+log_level: info
+# Empty = no OTLP exporter is created (local dev; trace_id still flows into
+# logs). Point at a collector to export spans, e.g. "127.0.0.1:4317".
+otlp_endpoint: ""
+api_addr: ":8080"
+worker_addr: ":8081"
+edge_addr: ":8082"
+api_origin: "http://127.0.0.1:8080"
+# Event bus (BASE-006/007); defaults match make dev-deps (compose).
+kafka_brokers: "127.0.0.1:19092"
+kafka_topic: "alert.events"
+kafka_group_id: "alert-worker-dev"
+# Worker store (BASE-007); matches make dev-deps.
+pg_dsn: "postgres://postgres:postgres@127.0.0.1:55432/alert_platform?sslmode=disable"

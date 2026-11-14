@@ -1,0 +1,34 @@
+syntax = "proto3";
+package alert.notification.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/notification/v1;notificationv1";
+import "google/protobuf/timestamp.proto";
+
+enum DeliveryStatus {
+  DELIVERY_STATUS_UNSPECIFIED = 0;
+  DELIVERY_STATUS_PENDING = 1;
+  DELIVERY_STATUS_SENDING = 2;
+  DELIVERY_STATUS_SENT = 3;
+  DELIVERY_STATUS_RETRY_SCHEDULED = 4;
+  DELIVERY_STATUS_FAILED = 5;
+  DELIVERY_STATUS_SUPPRESSED = 6;
+}
+message NotificationTask {
+  string task_id = 1;
+  string tenant_id = 2;
+  string incident_id = 3;
+  string channel_id = 4;
+  string receiver_id = 5;
+  string idempotency_key = 6;
+  uint64 policy_version = 7;
+  DeliveryStatus delivery_status = 8;
+  uint32 attempt_count = 9;
+  google.protobuf.Timestamp next_attempt_at = 10;
+}
+message NotificationAttempt {
+  string attempt_id = 1;
+  string task_id = 2;
+  uint32 attempt_number = 3;
+  int32 http_status_code = 4;
+  string failure_code = 5;
+  google.protobuf.Timestamp attempted_at = 6;
+}

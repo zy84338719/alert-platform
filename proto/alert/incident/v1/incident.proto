@@ -1,0 +1,94 @@
+syntax = "proto3";
+package alert.incident.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/incident/v1;incidentv1";
+import "google/protobuf/timestamp.proto";
+import "api/api.proto";
+
+enum IncidentStatus {
+  INCIDENT_STATUS_UNSPECIFIED = 0;
+  INCIDENT_STATUS_OPEN = 1;
+  INCIDENT_STATUS_ACKNOWLEDGED = 2;
+  INCIDENT_STATUS_MITIGATED = 3;
+  INCIDENT_STATUS_CLOSED = 4;
+}
+message Incident {
+  string incident_id = 1;
+  string tenant_id = 2;
+  string correlation_key = 3;
+  IncidentStatus status = 4;
+  string owner_team_id = 5;
+  string severity = 6;
+  repeated string alert_instance_ids = 7;
+  uint64 version = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+message AcknowledgeIncidentRequest {
+  string incident_id = 1;
+  string idempotency_key = 2;
+  uint64 expected_version = 3;
+}
+message AcknowledgeIncidentResponse { Incident incident = 1; }
+message ListIncidentsRequest {
+  string status = 1 [(api.query) = "status"];
+  int32 page_size = 2 [(api.query) = "page_size"];
+  string page_token = 3 [(api.query) = "page_token"];
+}
+message ListIncidentsResponse {
+  repeated Incident incidents = 1;
+  string next_page_token = 2;
+}
+message GetIncidentRequest { string incident_id = 1 [(api.path) = "incident_id"]; }
+message GetIncidentResponse { Incident incident = 1; }
+
+message LinkedAlert {
+  string instance_id = 1;
+  string relation_type = 2;  // derived_1to1 | manual | auto_correlated
+  string name = 3;
+  string severity = 4;
+  string monitor_state = 5;
+  google.protobuf.Timestamp started_at = 6;
+}
+message EscalationRecord {
+  int32 stage = 1;
+  int64 policy_version = 2;
+  google.protobuf.Timestamp notified_at = 3;
+}
+message GetIncidentDetailRequest { string incident_id = 1 [(api.path) = "incident_id"]; }
+message GetIncidentDetailResponse {
+  Incident incident = 1;
+  repeated LinkedAlert linked_alerts = 2;
+  repeated EscalationRecord escalations = 3;
+}
+message LinkAlertRequest {
+  string incident_id = 1 [(api.path) = "incident_id"];
+  string instance_id = 2;
+  uint64 expected_version = 3;
+}
+message LinkAlertResponse { uint64 version = 1; }
+message UnlinkAlertRequest {
+  string incident_id = 1 [(api.path) = "incident_id"];
+  string instance_id = 2;
+}
+message UnlinkAlertResponse { uint64 version = 1; }
+
+service IncidentService {
+  rpc AcknowledgeIncident(AcknowledgeIncidentRequest) returns (AcknowledgeIncidentResponse) {
+    option (api.post) = "/incidents/v1/{incident_id}/acknowledge";
+  }
+  rpc ListIncidents(ListIncidentsRequest) returns (ListIncidentsResponse) {
+    option (api.get) = "/incidents/v1";
+  }
+  rpc GetIncident(GetIncidentRequest) returns (GetIncidentResponse) {
+    option (api.get) = "/incidents/v1/{incident_id}";
+  }
+  rpc GetIncidentDetail(GetIncidentDetailRequest) returns (GetIncidentDetailResponse) {
+    option (api.get) = "/incidents/v1/{incident_id}/detail";
+  }
+  rpc LinkAlert(LinkAlertRequest) returns (LinkAlertResponse) {
+    option (api.post) = "/incidents/v1/{incident_id}/link/{instance_id}";
+  }
+  rpc UnlinkAlert(UnlinkAlertRequest) returns (UnlinkAlertResponse) {
+    option (api.post) = "/incidents/v1/{incident_id}/unlink/{instance_id}";
+  }
+}

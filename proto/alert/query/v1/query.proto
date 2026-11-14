@@ -1,0 +1,78 @@
+syntax = "proto3";
+package alert.query.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/query/v1;queryv1";
+import "google/protobuf/timestamp.proto";
+import "api/api.proto";
+
+// PROC-007: read-side queries. Tenant scoping is mandatory and always comes
+// from the authenticated context — never from a query parameter alone.
+message AlertInstance {
+  string instance_id = 1;
+  string tenant_id = 2;
+  string source_id = 3;
+  string fingerprint = 4;
+  string episode_key = 5;
+  string name = 6;
+  string severity = 7;
+  string monitor_state = 8;
+  string cluster_id = 9;
+  string entity_type = 10;
+  string entity_uid = 11;
+  map<string, string> labels = 12;
+  google.protobuf.Timestamp starts_at = 13;
+  google.protobuf.Timestamp ends_at = 14;
+  google.protobuf.Timestamp last_observed_at = 15;
+  google.protobuf.Timestamp last_transition_at = 16;
+  int64 version = 17;
+}
+
+message AlertTransition {
+  string transition_id = 1;
+  string instance_id = 2;
+  string from_state = 3;
+  string to_state = 4;
+  string event_id = 5;
+  google.protobuf.Timestamp transition_at = 6;
+}
+
+message ListAlertsRequest {
+  // Filters (all optional). monitor_state: pending|firing|stale|resolved;
+  // omitting it lists active states only (pending/firing/stale).
+  string monitor_state = 1 [(api.query) = "state"];
+  string severity = 2 [(api.query) = "severity"];
+  string source_id = 3 [(api.query) = "source_id"];
+  string cluster_id = 4 [(api.query) = "cluster_id"];
+  string name = 5 [(api.query) = "name"];
+  int32 page_size = 6 [(api.query) = "page_size"];
+  string page_token = 7 [(api.query) = "page_token"];
+}
+message ListAlertsResponse {
+  repeated AlertInstance alerts = 1;
+  string next_page_token = 2;
+  int64 total_estimate = 3;
+}
+
+message GetAlertRequest { string instance_id = 1 [(api.path) = "instance_id"]; }
+message GetAlertResponse { AlertInstance alert = 1; }
+
+message ListTransitionsRequest {
+  string instance_id = 1 [(api.path) = "instance_id"];
+  int32 page_size = 2 [(api.query) = "page_size"];
+  string page_token = 3 [(api.query) = "page_token"];
+}
+message ListTransitionsResponse {
+  repeated AlertTransition transitions = 1;
+  string next_page_token = 2;
+}
+
+service QueryService {
+  rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse) {
+    option (api.get) = "/alerts/v1";
+  }
+  rpc GetAlert(GetAlertRequest) returns (GetAlertResponse) {
+    option (api.get) = "/alerts/v1/{instance_id}";
+  }
+  rpc ListTransitions(ListTransitionsRequest) returns (ListTransitionsResponse) {
+    option (api.get) = "/alerts/v1/{instance_id}/transitions";
+  }
+}

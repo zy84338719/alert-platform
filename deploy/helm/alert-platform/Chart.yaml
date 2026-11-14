@@ -1,0 +1,6 @@
+apiVersion: v2
+name: alert-platform
+description: alert-platform 中央组件 + Edge（docs/02 §1 部署模式）
+type: application
+version: 0.3.0
+appVersion: "0.3.0"

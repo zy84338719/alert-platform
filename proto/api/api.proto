@@ -1,0 +1,19 @@
+// Minimal subset of CloudWeGo Hertz hz method annotations.
+// Before use in production, compare with the pinned hz's official api.proto.
+syntax = "proto2";
+package api;
+option go_package = "github.com/example/alert-platform/gen/go/api;api";
+import "google/protobuf/descriptor.proto";
+extend google.protobuf.MethodOptions {
+  optional string get = 50201;
+  optional string post = 50202;
+  optional string put = 50203;
+  optional string delete = 50204;
+  optional string patch = 50205;
+}
+extend google.protobuf.FieldOptions {
+  optional string query = 50102;
+  optional string header = 50103;
+  optional string body = 50105;
+  optional string path = 50106;
+}

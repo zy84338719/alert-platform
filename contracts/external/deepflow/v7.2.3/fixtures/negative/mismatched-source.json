@@ -1,0 +1,10 @@
+{
+  "schema_version": "deepflow.bridge.v1",
+  "source_id": "someone-elses-source",
+  "policy_id": "sample-policy-008",
+  "event_level": "warning",
+  "alert_name": "Source spoof attempt",
+  "occurred_at": "2026-11-12T10:00:00+08:00",
+  "target_key": "workload-uid-example",
+  "tenant_id": "00000000-0000-0000-0000-000000000099"
+}

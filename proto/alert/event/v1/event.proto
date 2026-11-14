@@ -1,0 +1,79 @@
+syntax = "proto3";
+package alert.event.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/event/v1;eventv1";
+import "google/protobuf/timestamp.proto";
+
+enum SourceType {
+  SOURCE_TYPE_UNSPECIFIED = 0;
+  SOURCE_TYPE_DEEPFLOW = 1;
+  SOURCE_TYPE_ALERTMANAGER = 2;
+  SOURCE_TYPE_HUATUO = 3;
+  SOURCE_TYPE_CUSTOM = 4;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_STATEFUL = 1;
+  EVENT_KIND_OCCURRENCE = 2;
+}
+
+enum EventSignal {
+  EVENT_SIGNAL_UNSPECIFIED = 0;
+  EVENT_SIGNAL_FIRING = 1;
+  EVENT_SIGNAL_RESOLVED = 2;
+  EVENT_SIGNAL_NO_DATA = 3;
+  EVENT_SIGNAL_INFO = 4;
+  EVENT_SIGNAL_OCCURRED = 5;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_CRITICAL = 1;
+  SEVERITY_ERROR = 2;
+  SEVERITY_WARNING = 3;
+  SEVERITY_INFO = 4;
+}
+
+message SourceRef {
+  string source_id = 1;        // Registered source instance, not user-supplied tenant identity.
+  SourceType source_type = 2;
+  string source_version = 3;
+  string external_event_id = 4;
+  string external_rule_id = 5;
+}
+
+message ResourceRef {
+  string cluster_id = 1;
+  string region = 2;
+  string namespace = 3;
+  string resource_type = 4;
+  string resource_uid = 5;
+  string resource_name = 6;
+  string environment = 7;
+  string service_id = 8;
+}
+
+message AlertEvent {
+  string event_id = 1;              // Stable logical ingest event ID.
+  string transport_id = 2;          // Stable across Edge -> center retries.
+  string tenant_id = 3;             // Server-derived; Edge claims checked against auth.
+  SourceRef source = 4;
+  ResourceRef resource = 5;
+  EventKind kind = 6;
+  EventSignal signal = 7;
+  Severity severity = 8;
+  string alert_name = 9;
+  map<string, string> labels = 10;
+  map<string, string> annotations = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+  google.protobuf.Timestamp received_at = 13;
+  google.protobuf.Timestamp starts_at = 14;
+  google.protobuf.Timestamp ends_at = 15;
+  string fingerprint = 16;         // Recomputed by trusted adapter/server.
+  string episode_key = 17;
+  bytes raw_payload = 18;           // Limit payload size; alternatively use raw_payload_ref.
+  string raw_payload_ref = 19;
+  string adapter_version = 20;
+  string source_url = 21;
+  string event_key = 22;           // Source event idempotency key.
+}

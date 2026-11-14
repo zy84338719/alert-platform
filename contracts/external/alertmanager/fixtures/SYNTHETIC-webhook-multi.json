@@ -1,0 +1,38 @@
+{
+  "receiver": "alert-platform",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {"alertname": "HighRequestLatency", "severity": "critical", "namespace": "demo", "cluster": "prod-studio"},
+      "annotations": {"summary": "multi-instance batch, alert 1"},
+      "startsAt": "2026-11-12T10:00:00+08:00",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://example.invalid/prometheus/graph",
+      "fingerprint": "multi-fp-1"
+    },
+    {
+      "status": "firing",
+      "labels": {"alertname": "HighRequestLatency", "severity": "critical", "namespace": "demo", "cluster": "prod-studio"},
+      "annotations": {"summary": "duplicate fingerprint within one batch"},
+      "startsAt": "2026-11-12T10:00:00+08:00",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "multi-fp-1"
+    },
+    {
+      "status": "resolved",
+      "labels": {"alertname": "DiskUsageHigh", "severity": "warning", "namespace": "demo", "node": "node-7"},
+      "annotations": {"summary": "resolved within the same batch"},
+      "startsAt": "2026-11-12T09:00:00+08:00",
+      "endsAt": "2026-11-12T10:02:00+08:00",
+      "fingerprint": "multi-fp-2"
+    }
+  ],
+  "groupLabels": {"alertname": "HighRequestLatency"},
+  "commonLabels": {"alertname": "HighRequestLatency"},
+  "commonAnnotations": {},
+  "externalURL": "https://example.invalid/alertmanager",
+  "version": "4",
+  "groupKey": "synthetic-multi-group-key",
+  "truncatedAlerts": 0
+}

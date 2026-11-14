@@ -1,0 +1,29 @@
+:root { --line:#e2e2e2; --bg:#fafafa; --accent:#2563eb; --bad:#dc2626; --ok:#16a34a; --warn:#d97706; }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.5 -apple-system,"PingFang SC","Segoe UI",sans-serif; background:var(--bg); color:#111; }
+header { display:flex; align-items:center; gap:16px; padding:10px 20px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; }
+.brand { font-weight:700; letter-spacing:.5px; }
+nav a { margin-right:12px; color:#333; text-decoration:none; padding:4px 8px; border-radius:6px; }
+nav a.active { background:var(--accent); color:#fff; }
+#login { margin-left:auto; display:flex; gap:6px; align-items:center; }
+main { padding:20px; max-width:1100px; margin:0 auto; }
+table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); }
+th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { background:#f3f4f6; font-weight:600; }
+.muted { color:#6b7280; }
+.badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; color:#fff; }
+.badge.firing { background:var(--bad); } .badge.pending { background:var(--warn); }
+.badge.stale { background:#92400e; } .badge.resolved { background:var(--ok); }
+.badge.open { background:var(--bad); } .badge.acknowledged { background:var(--warn); }
+.badge.mitigated { background:var(--accent); } .badge.closed { background:var(--ok); }
+form.inline { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; align-items:flex-end; }
+form.inline label { display:flex; flex-direction:column; font-size:12px; color:#374151; gap:2px; }
+input, select, textarea { padding:5px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+button { padding:5px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; }
+button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+button:disabled { opacity:.5; cursor:default; }
+pre { background:#f9fafb; border:1px solid var(--line); padding:10px; overflow:auto; border-radius:6px; }
+.card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin:10px 0; }
+.error { color:var(--bad); }
+.mt { margin-top:10px; }
+.ok { color: var(--ok); }

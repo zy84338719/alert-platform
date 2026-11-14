@@ -1,0 +1,9 @@
+{
+  "schema_version": "deepflow.bridge.v1",
+  "source_id": "deepflow-prod-studio",
+  "policy_id": "sample-policy-008",
+  "event_level": "catastrophic",
+  "alert_name": "Unknown level",
+  "occurred_at": "2026-11-12T10:00:00+08:00",
+  "target_key": "workload-uid-example"
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": "deepflow.bridge.v1",
+  "source_id": "deepflow-prod-studio",
+  "source_version": "7.2.3",
+  "policy_id": "sample-policy-009",
+  "event_level": "no_data",
+  "alert_name": "Example NoData",
+  "occurred_at": "2026-11-12T11:00:00+08:00",
+  "target_key": "workload-uid-example",
+  "cluster_id": "prod-studio",
+  "message": "SYNTHETIC - NoData must never auto-resolve (docs/06 §4)"
+}

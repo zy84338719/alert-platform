@@ -1,0 +1,7 @@
+# Keep the build context minimal and deterministic.
+.git/
+.dev/
+.v2c/
+.DS_Store
+*.log
+MANIFEST.sha256

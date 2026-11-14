@@ -1,0 +1,14 @@
+{
+  "receiver": "alert-platform",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "suppressed",
+      "labels": {"alertname": "HighRequestLatency"},
+      "startsAt": "2026-11-12T10:00:00+08:00",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "badstatus"
+    }
+  ],
+  "version": "4"
+}

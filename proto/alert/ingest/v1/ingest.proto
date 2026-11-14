@@ -1,0 +1,25 @@
+syntax = "proto3";
+package alert.ingest.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/ingest/v1;ingestv1";
+import "api/api.proto";
+import "alert/event/v1/event.proto";
+
+message PushBatchRequest {
+  string batch_id = 1; // Stable across retries; whole-batch acceptance only in v1.
+  repeated alert.event.v1.AlertEvent events = 2;
+}
+message PushBatchResponse {
+  string durable_batch_id = 1;
+  // Whole-batch atomic acceptance only in v1: the batch is either durably
+  // enqueued (202 + durable_batch_id) or rejected. Field 2 (accepted_count)
+  // is reserved; per-event acks, if ever introduced, must be a new rpc/type
+  // so partial-success semantics never leak into this response.
+  reserved 2;
+  reserved "accepted_count";
+}
+
+service IngestService {
+  rpc PushBatch(PushBatchRequest) returns (PushBatchResponse) {
+    option (api.post) = "/ingest/v1/events:batch";
+  }
+}

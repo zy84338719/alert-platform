@@ -1,0 +1,61 @@
+syntax = "proto3";
+package alert.policy.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/policy/v1;policyv1";
+import "google/protobuf/duration.proto";
+import "api/api.proto";
+
+message LabelMatcher {
+  string name = 1;
+  string operation = 2;  // EQ/NEQ/REGEX_IN/REGEX_NOT_IN; validated at application boundary.
+  string value = 3;
+}
+message RoutePolicy {
+  string policy_id = 1;
+  string tenant_id = 2;
+  uint64 version = 3;
+  int32 priority = 4;
+  repeated LabelMatcher matchers = 5;
+  repeated string group_by = 6;
+  google.protobuf.Duration group_wait = 7;
+  google.protobuf.Duration group_interval = 8;
+  google.protobuf.Duration repeat_interval = 9;
+  repeated string receiver_ids = 10;
+  bool enabled = 11;
+}
+
+message CreateRouteRequest {
+  string request_id = 1;
+  int32 priority = 2;
+  repeated LabelMatcher matchers = 3;
+  repeated string receiver_ids = 4;
+  bool send_resolved = 5;
+}
+message CreateRouteResponse {
+  string policy_id = 1;
+  uint64 version = 2;
+}
+message ListRoutesRequest {}
+message ListRoutesResponse {
+  repeated RoutePolicy routes = 1;
+}
+message SetRouteEnabledRequest {
+  string policy_id = 1;
+  bool enabled = 2;
+  uint64 expected_version = 3;
+}
+message SetRouteEnabledResponse {
+  string policy_id = 1;
+  uint64 version = 2;
+}
+
+service PolicyService {
+  rpc CreateRoute(CreateRouteRequest) returns (CreateRouteResponse) {
+    option (api.post) = "/policies/v1/routes";
+  }
+  rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse) {
+    option (api.get) = "/policies/v1/routes";
+  }
+  rpc SetRouteEnabled(SetRouteEnabledRequest) returns (SetRouteEnabledResponse) {
+    option (api.post) = "/policies/v1/routes/{policy_id}/set-enabled";
+  }
+}

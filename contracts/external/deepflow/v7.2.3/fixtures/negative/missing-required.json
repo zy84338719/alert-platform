@@ -1,0 +1,8 @@
+{
+  "schema_version": "deepflow.bridge.v1",
+  "source_id": "deepflow-prod-studio",
+  "policy_id": "sample-policy-008",
+  "event_level": "warning",
+  "alert_name": "Missing target_key",
+  "occurred_at": "2026-11-12T10:00:00+08:00"
+}

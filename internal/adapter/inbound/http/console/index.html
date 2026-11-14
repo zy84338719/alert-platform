@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alert Platform Console</title>
+<link rel="stylesheet" href="/console/style.css">
+</head>
+<body>
+<header>
+  <span class="brand">alert-platform</span>
+  <nav id="nav">
+    <a href="#/" data-view="home">总览</a>
+    <a href="#/alerts" data-view="alerts">告警</a>
+    <a href="#/incidents" data-view="incidents">Incident</a>
+    <a href="#/silences" data-view="silences">静默</a>
+    <a href="#/routes" data-view="routes">路由</a>
+    <a href="#/channels" data-view="channels">渠道</a>
+    <a href="#/notifications" data-view="notifications">通知记录</a>
+    <a href="#/edges" data-view="edges">集群健康</a>
+    <a href="#/audit" data-view="audit">审计</a>
+    <a href="#/system" data-view="system">系统</a>
+  </nav>
+  <form id="login">
+    <input id="token" type="password" placeholder="平台令牌 (Bearer)" autocomplete="off">
+    <button type="submit">登录</button>
+    <span id="whoami" class="muted"></span>
+  </form>
+</header>
+<main id="view"><p class="muted">登录后选择左侧功能。</p></main>
+<script src="/console/app.js"></script>
+</body>
+</html>

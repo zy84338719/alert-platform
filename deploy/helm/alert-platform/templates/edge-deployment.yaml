@@ -1,0 +1,73 @@
+{{- if .Values.edge.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "alert-platform.fullname" . }}-edge
+  labels: {{- include "alert-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: edge
+spec:
+  serviceName: {{ include "alert-platform.fullname" . }}-edge
+  replicas: {{ .Values.edge.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alert-platform
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: edge
+  template:
+    metadata:
+      labels: {{- include "alert-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: edge
+    spec:
+      containers:
+        - name: edge
+          image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/alert-edge"]
+          ports:
+            - name: http
+              containerPort: 8082
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+          resources: {{- toYaml .Values.edge.resources | nindent 12 }}
+          env:
+            {{- range $k, $v := .Values.edge.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.edge.huatuo }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: ALERT_EDGE_MODE
+              value: {{ .Values.edge.mode | quote }}
+            - name: ALERT_EDGE_WAL_DIR
+              value: /wal
+            - name: ALERT_EDGE_ADDR
+              value: ":8082"
+          volumeMounts:
+            - name: wal
+              mountPath: /wal
+            - name: edge-sources
+              mountPath: /etc/edge
+              readOnly: true
+          # Disk waterline self-alerting: the WAL gauge on /metrics plus this
+          # eviction threshold keep a full disk from taking the node down.
+          volumeClaimTemplates: []
+      volumes:
+        - name: edge-sources
+          secret:
+            secretName: {{ include "alert-platform.fullname" . }}-edge-sources
+            optional: true
+  volumeClaimTemplates:
+    - metadata:
+        name: wal
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.edge.wal.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.edge.wal.sizeLimit }}
+{{- end }}

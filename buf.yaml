@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  # Hertz annotation proto is vendor-compatible and not a public versioned package.
+  ignore:
+    - proto/api/api.proto
+breaking:
+  use:
+    - FILE

@@ -1,0 +1,16 @@
+.DS_Store
+*.out
+*.test
+coverage.txt
+.env
+*.log
+.tmp/
+__pycache__/
+.gen/
+.dev/
+etc/local*.yaml
+.v2c/
+alert-api
+alert-worker
+alert-edge
+alert-migrate

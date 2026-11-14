@@ -1,0 +1,25 @@
+# MC-001/MC-005: per-cluster overlay. BLOCKED on real kubeconfigs/registry —
+# the health gate is scripts/cluster_health.sh once access is provided.
+image:
+  registry: "registry.dev.example.com/infra"   # per-region registry
+  tag: "0.3.0-rc1"
+api:
+  replicas: 2
+  env:
+    ALERT_KAFKA_BROKERS: "kafka.infra:9092"
+    ALERT_PG_DSN: "postgres://alert:${PG_PASSWORD}@postgres.infra:5432/alert_platform?sslmode=disable"
+worker:
+  replicas: 2
+edge:
+  enabled: true
+  mode: gateway
+  env:
+    ALERT_API_ORIGIN: "https://alert-api.dev.example.com"
+  sources:
+    # MC-005: per-cluster source registrations (token hashes managed in the
+    # cluster secret store; correlation to tenant mapping in the registry).
+    - token_hash: "REPLACE_PER_CLUSTER"
+      tenant_id: "REPLACE_TENANT_UUID"
+      source_id: "REPLACE_SOURCE_UUID"
+      cluster_id: "dev"
+      type: "deepflow"

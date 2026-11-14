@@ -1,0 +1,57 @@
+# Defaults target a DEV cluster (single-replica, small requests). Production
+# overlays raise replicas/resources and set the registry/image tags.
+image:
+  registry: ""          # set per environment, e.g. registry.example.com/infra
+  repository: alert-platform
+  tag: "0.3.0-dev"
+  pullPolicy: IfNotPresent
+
+# Central components (api + worker). Edge runs per-cluster with mode=gateway.
+api:
+  enabled: true
+  replicas: 2
+  resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: "1", memory: 512Mi } }
+  env:
+    ALERT_KAFKA_BROKERS: "kafka:9092"
+    ALERT_PG_DSN: "postgres://alert:alert@postgres:5432/alert_platform?sslmode=disable"
+
+worker:
+  enabled: true
+  replicas: 2
+  resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: "1", memory: 512Mi } }
+  env:
+    ALERT_KAFKA_BROKERS: "kafka:9092"
+    ALERT_PG_DSN: "postgres://alert:alert@postgres:5432/alert_platform?sslmode=disable"
+    ALERT_STALE_AFTER: "5m"
+
+migrate:
+  enabled: true          # job runs before api/worker roll out
+  env:
+    ALERT_PG_DSN: "postgres://alert:alert@postgres:5432/alert_platform?sslmode=disable"
+
+edge:
+  enabled: false         # enable in per-cluster overlays
+  mode: gateway          # gateway | collector
+  replicas: 1
+  resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+  wal:
+    sizeLimit: 2Gi
+    storageClass: ""     # empty = default SC
+  env:
+    ALERT_API_ORIGIN: "http://alert-platform-api:8080"
+    ALERT_EDGE_SOURCES_FILE: "/etc/edge/edge-sources.json"
+  sources: []            # static vendor credentials (secret-managed)
+  huatuo: {}
+
+networkPolicy:
+  enabled: true
+  # edge may only talk to the central api; api/worker only to kafka+pg.
+  egress:
+    kafkaNamespace: "infra"
+    postgresNamespace: "infra"
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor: false    # enable where a Prometheus Operator exists

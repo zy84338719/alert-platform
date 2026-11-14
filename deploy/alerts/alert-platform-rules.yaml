@@ -1,0 +1,43 @@
+# PERF-003: self-alerting rules + scaling thresholds (PrometheusRule shape).
+# Waterlines derived from the local capacity run; per-cluster overlays adjust.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alert-platform-self
+  labels: { release: prometheus }
+spec:
+  groups:
+    - name: alert-platform.capacity
+      rules:
+        - alert: AlertWorkerConsumerLagHigh
+          expr: sum(kafka_consumergroup_lag{group=~"alert-worker.*"}) by (group) > 50000
+          for: 2m
+          labels: { severity: warning, team: sre }
+          annotations:
+            summary: "消费滞后 {{ $value }}（2k EPS 突发下单副本 ~450 EPS，扩容 worker）"
+        - alert: AlertWorkerConsumerLagCritical
+          expr: sum(kafka_consumergroup_lag{group=~"alert-worker.*"}) by (group) > 200000
+          for: 5m
+          labels: { severity: critical, team: sre }
+        - alert: AlertAPIHighLatency
+          expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{service="alert-api"}[5m])) by (le)) > 1
+          for: 5m
+          labels: { severity: warning, team: sre }
+        - alert: EdgeWALWaterlineHigh
+          expr: alert_platform_edge_wal_bytes > 1.5e9   # 1.5 GiB of a 2 GiB PVC
+          for: 5m
+          labels: { severity: warning, team: sre }
+        - alert: EdgeWALFullImminent
+          expr: alert_platform_edge_wal_pending_records > 100000
+          for: 10m
+          labels: { severity: critical, team: sre }
+        - alert: RetentionStuck
+          expr: increase(alert_platform_retention_receipts_deleted_total[6h]) == 0 and alert_platform_retention_receipts_retained_total > 100000
+          labels: { severity: warning, team: sre }
+# 扩容阈值表（PERF-003）：
+# | 组件 | 指标 | 扩容阈值 | 动作 |
+# | api | HTTP P95>500ms 或 CPU>60% | +1 副本（上限 6） |
+# | worker | 消费 lag>50k 持续 2m | +1 副本（2k EPS 需 ~5 副本，实测 450 EPS/副本） |
+# | worker | lag>200k 持续 5m | 翻倍 + 上游限流 |
+# | edge | WAL>1.5GiB | 磁盘扩容/上传限速上调 |
+# | PG | 连接>80% 或慢查询 P95>500ms | pgbouncer/读写分离评审 |

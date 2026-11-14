@@ -1,0 +1,42 @@
+syntax = "proto3";
+package alert.channel.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/channel/v1;channelv1";
+import "api/api.proto";
+
+message Channel {
+  string channel_id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string type = 4;          // webhook|feishu|dingtalk|email
+  string webhook_url = 5;   // config carries only the URL over the wire; secrets never echo.
+  bool enabled = 6;
+  bool is_default = 7;
+}
+message CreateChannelRequest {
+  string request_id = 1;
+  string name = 2;
+  string type = 3;
+  string webhook_url = 4;
+  string secret = 5;        // dingtalk sign secret; write-only.
+  bool is_default = 6;
+}
+message CreateChannelResponse { Channel channel = 1; }
+message ListChannelsRequest {}
+message ListChannelsResponse { repeated Channel channels = 1; }
+message SetChannelEnabledRequest {
+  string channel_id = 1 [(api.path) = "channel_id"];
+  bool enabled = 2;
+}
+message SetChannelEnabledResponse { Channel channel = 1; }
+
+service ChannelService {
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse) {
+    option (api.post) = "/channels/v1";
+  }
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {
+    option (api.get) = "/channels/v1";
+  }
+  rpc SetChannelEnabled(SetChannelEnabledRequest) returns (SetChannelEnabledResponse) {
+    option (api.post) = "/channels/v1/{channel_id}/set-enabled";
+  }
+}

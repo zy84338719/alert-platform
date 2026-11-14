@@ -1,0 +1,66 @@
+syntax = "proto3";
+package alert.source.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/source/v1;sourcev1";
+import "google/protobuf/timestamp.proto";
+import "alert/event/v1/event.proto";
+import "api/api.proto";
+
+message Source {
+  string source_id = 1;
+  string tenant_id = 2;
+  alert.event.v1.SourceType source_type = 3;
+  string vendor_version = 4;
+  string cluster_id = 5;
+  bool enabled = 6;
+  string adapter_version = 7;
+  google.protobuf.Timestamp last_seen_at = 8;
+  string health_status = 9;
+  string name = 10;
+}
+message GetSourceRequest { string source_id = 1; }
+message GetSourceResponse { Source source = 1; }
+
+// ING-003: source registry management. The plaintext credential token is
+// returned exactly once by CreateSource and never stored or logged again.
+message CreateSourceRequest {
+  string request_id = 1;  // Idempotency key for the management call itself.
+  string tenant_id = 2;
+  string name = 3;
+  alert.event.v1.SourceType source_type = 4;
+  string vendor_version = 5;
+  string cluster_id = 6;
+}
+message CreateSourceResponse {
+  Source source = 1;
+  string credential_token = 2;  // Shown once; only the hash is persisted.
+}
+message ListSourcesRequest {
+  string tenant_id = 1;
+  bool include_disabled = 2;
+}
+message ListSourcesResponse { repeated Source sources = 1; }
+message SetSourceEnabledRequest {
+  string source_id = 1;
+  bool enabled = 2;
+}
+message SetSourceEnabledResponse { Source source = 1; }
+message RevokeCredentialRequest { string source_id = 1; }
+message RevokeCredentialResponse { Source source = 1; }
+
+service SourceService {
+  rpc GetSource(GetSourceRequest) returns (GetSourceResponse) {
+    option (api.get) = "/sources/v1/{source_id}";
+  }
+  rpc CreateSource(CreateSourceRequest) returns (CreateSourceResponse) {
+    option (api.post) = "/sources/v1";
+  }
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse) {
+    option (api.get) = "/sources/v1";
+  }
+  rpc SetSourceEnabled(SetSourceEnabledRequest) returns (SetSourceEnabledResponse) {
+    option (api.post) = "/sources/v1/{source_id}/set-enabled";
+  }
+  rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse) {
+    option (api.post) = "/sources/v1/{source_id}/revoke-credential";
+  }
+}
