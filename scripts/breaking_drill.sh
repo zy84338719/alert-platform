@@ -31,7 +31,7 @@ cp buf.yaml "$BASELINE/buf.yaml"
 echo "[drill] baseline snapshot: $BASELINE"
 echo "[drill] step 1/3: RED — remove field 'episode_key' from $VICTIM"
 grep -qF "$FIELD_LINE" "$VICTIM" || { echo "[drill] FAIL: expected field line not found"; exit 1; }
-sed -i .bak "s|$FIELD_LINE|$DRILLED_LINE|" "$VICTIM"
+sed -i.bak "s|$FIELD_LINE|$DRILLED_LINE|" "$VICTIM"
 
 set +e
 OUT="$(GOWORK=off go tool buf breaking --against "$BASELINE" 2>&1)"
@@ -41,14 +41,14 @@ if [ "$RC" -eq 0 ]; then
   echo "[drill] FAIL: breaking change was NOT blocked (exit 0)"
   echo "$OUT"
   # restore before exiting so the working tree is clean
-  sed -i .bak "s|$DRILLED_LINE|$FIELD_LINE|" "$VICTIM"
+  sed -i.bak "s|$DRILLED_LINE|$FIELD_LINE|" "$VICTIM"
   exit 1
 fi
 echo "[drill] blocked as expected (exit $RC):"
 echo "$OUT" | head -5
 
 echo "[drill] step 2/3: restore the field"
-sed -i .bak "s|$DRILLED_LINE|$FIELD_LINE|" "$VICTIM"
+sed -i.bak "s|$DRILLED_LINE|$FIELD_LINE|" "$VICTIM"
 
 echo "[drill] step 3/3: GREEN — same comparison after restore"
 if ! GOWORK=off go tool buf breaking --against "$BASELINE"; then
