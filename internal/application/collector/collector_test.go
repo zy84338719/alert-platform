@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +38,14 @@ func TestKernelEventToCenterUnder10s(t *testing.T) {
 	sseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprint(w, "id: 1\nevent: kernel\ndata: {\"kind\":\"oom\",\"node\":\"node-7\"}\n\n")
+		// P0-04: official wire format — CloudEvents 1.0 JSON (contract:
+		// contracts/external/huatuo/v1/contract.md).
+		ce, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "external", "huatuo", "v1", "fixtures", "SYNTHETIC-cloudevent-oom.json"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		fmt.Fprintf(w, "id: %s\ndata: %s\n\n", "7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01", string(ce))
 		fl.Flush()
 		sent.Store(true)
 		// keep the stream open until the test tears down
@@ -82,13 +92,22 @@ func TestKernelEventToCenterUnder10s(t *testing.T) {
 // bursts promote to exactly one stateful firing.
 func TestGapRecordingAndBurstPromotion(t *testing.T) {
 	sseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ce, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "external", "huatuo", "v1", "fixtures", "SYNTHETIC-cloudevent-oom.json"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprint(w, "id: 1\ndata: {\"kind\":\"oom\",\"node\":\"n1\"}\n\n")
-		fmt.Fprint(w, "id: 2\ndata: {\"kind\":\"oom\",\"node\":\"n1\"}\n\n")
-		fmt.Fprint(w, "id: 3\ndata: {\"kind\":\"oom\",\"node\":\"n1\"}\n\n")
+		// 同一实体（node-7/containerd://a1b2…）的三次 OOM 观察 → 阈值 3 触发升级；
+		// SSE 游标必须为数字（gap 检测按数字游标比较），3→7 跳变 = 4..6 丢失
+		for i, id := range []string{"1", "2", "3", "7"} {
+			ev := strings.Replace(string(ce),
+				"7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01",
+				fmt.Sprintf("00000000-0000-0000-0000-00000000000%d", i+1), 2)
+			fmt.Fprintf(w, "id: %s\ndata: %s\n\n", id, ev)
+		}
 		// cursor jump: 4..6 lost while "disconnected"
-		fmt.Fprint(w, "id: 7\ndata: {\"kind\":\"oom\",\"node\":\"n1\"}\n\n")
 		fl.Flush()
 		time.Sleep(3 * time.Second)
 	}))
@@ -124,7 +143,7 @@ func TestGapRecordingAndBurstPromotion(t *testing.T) {
 				if ev.AlertName == "HUATUO sse-gap" {
 					kinds["gap"] = true
 				}
-				if ev.AlertName == "HUATUO oom burst on n1" {
+				if ev.AlertName == "HUATUO memory_oom_kill burst on containerd://a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2" {
 					kinds["promoted"] = true
 					if fmt.Sprint(ev.Signal) != "1" {
 						t.Errorf("promotion signal = %v, want FIRING(1)", ev.Signal)

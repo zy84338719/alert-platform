@@ -11,8 +11,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -95,7 +97,17 @@ func main() {
 		}()
 
 		if cfg.EdgeMode == "collector" {
+			// P0-04: official POST SSE handshake (contract:
+			// contracts/external/huatuo/v1/contract.md) — filters body optional.
 			stream := sseclient.New(cfg.HuatuoSSEURL)
+			stream.Method = http.MethodPost
+			stream.BearerToken = cfg.HuatuoToken
+			filters := map[string]any{}
+			if cfg.HuatuoTracer != "" {
+				filters["tracer_name"] = cfg.HuatuoTracer
+			}
+			body, _ := json.Marshal(map[string]any{"filters": filters})
+			stream.Body = body
 			col := collector.New(adaptStream(stream), log, collector.Config{
 				TenantID: cfg.HuatuoTenantID, SourceID: cfg.HuatuoSourceID, ClusterID: cfg.HuatuoClusterID,
 			})

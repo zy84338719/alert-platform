@@ -1,0 +1,14 @@
+: ping
+
+id: 7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01
+data: {"specversion":"1.0","id":"7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01","source":"/huatuo/node-7/memory_oom_kill","type":"tech.huatuo.kernel.event","datacontenttype":"application/json","time":"2026-11-15T09:41:22.123456789Z","data":{"hostname":"node-7","region":"cn-east-1","observed_timestamp":"2026-11-15T09:41:22.100000000+00:00","uploaded_timestamp":"2026-11-15T09:41:22.123456789+00:00","tracer_name":"memory_oom_kill","tracer_id":42,"tracer_run_type":"daemonset","tracer_type":"event","container_id":"containerd://a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2","container_hostname":"pay-web-7d9f","container_host_namespace":"prod-pay","container_type":"containerd","container_qos":"Guaranteed","tracer_data":{"trigger":{"pid":1234,"comm":"java"},"victim":{"pid":5678,"comm":"pay-worker"}}}}
+
+: ping
+
+id: 8a0e4b2f-6c3d-4a9b-8f2e-4d7c3b8e5a02
+data: {"specversion":"1.0","id":"8a0e4b2f-6c3d-4a9b-8f2e-4d7c3b8e5a02","source":"/huatuo/node-9/sched_tick","type":"tech.huatuo.kernel.event","datacontenttype":"application/json","time":"2026-11-15T09:42:01.987654321Z","data":{"hostname":"node-9","region":"cn-east-1","observed_timestamp":"2026-11-15T09:42:01.900000000+00:00","uploaded_timestamp":"2026-11-15T09:42:01.987654321+00:00","tracer_name":"sched_tick","tracer_id":43,"tracer_run_type":"daemonset","tracer_type":"event","tracer_data":{"tick_interval_ns":237328905,"tick_interval_threshold_ns":10000000,"comm":"demo-agent","pid":688073,"cpu":1}}}
+
+: ping
+
+id: 9b1f5c3a-7d4e-4b8c-9a3f-5e8d4c9f6b03
+data: {"specversion":"1.0","id":"9b1f5c3a-7d4e-4b8c-9a3f-5e8d4c9f6b03","source":"/huatuo/node-7/memory_oom_kill","type":"tech.huatuo.kernel.event","datacontenttype":"application/json","time":"2026-11-15T09:43:10.111222333Z","data":{"hostname":"node-7","region":"cn-east-1","observed_timestamp":"2026-11-15T09:43:10.100000000+00:00","uploaded_timestamp":"2026-11-15T09:43:10.111222333+00:00","tracer_name":"memory_oom_kill","tracer_id":42,"tracer_run_type":"daemonset","tracer_type":"event","container_id":"containerd://a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2","container_hostname":"pay-web-7d9f","container_host_namespace":"prod-pay","container_type":"containerd","container_qos":"Guaranteed","tracer_data":{"trigger":{"pid":1234,"comm":"java"},"victim":{"pid":9012,"comm":"pay-worker"}}}}

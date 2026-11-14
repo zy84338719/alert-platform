@@ -7,10 +7,12 @@ package sseclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,8 +38,15 @@ var Stop = errors.New("sse: stop")
 
 // Client connects to one SSE endpoint.
 type Client struct {
-	URL            string
-	Header         http.Header
+	URL    string
+	Header http.Header
+	// P0-04: the official HUATUO /v1/events/watch is HTTP POST + JSON body +
+	// Bearer token. Method defaults to GET for plain SSE; POST requests send
+	// Body with Content-Type: application/json; BearerToken is sent as the
+	// Authorization header.
+	Method      string
+	Body        []byte
+	BearerToken string
 	HeartbeatTimeout time.Duration // no data for this long -> reconnect (default 30s)
 	// CursorKind: how to detect gaps. "seq" compares numeric event ids.
 	GapDetection bool
@@ -100,12 +109,26 @@ func unWrap(err error) error {
 }
 
 func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL, nil)
+	method := c.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+	var body io.Reader
+	if len(c.Body) > 0 {
+		body = bytes.NewReader(c.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.URL, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
+	if len(c.Body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	}
 	for k, vs := range c.Header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -132,25 +155,34 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 		return fmt.Errorf("sse endpoint returned %d", resp.StatusCode)
 	}
 
-	// heartbeat watchdog
+	// Heartbeat watchdog (P0-04): driven by LAST ACTIVITY, not a fixed timer —
+	// every received line (including ": ping" keepalive comments and events)
+	// refreshes the deadline, so an actively streaming connection is never
+	// force-disconnected; a silent one is reconnected after the timeout.
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	lastActivity := time.Now()
 	go func() {
-		t := time.NewTicker(c.HeartbeatTimeout)
+		// check at 1/4 of the window so the detected stall is <= timeout
+		interval := c.HeartbeatTimeout / 4
+		if interval < 50*time.Millisecond {
+			interval = 50 * time.Millisecond
+		}
+		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
 			case <-t.C:
-				// no bytes within the window: force reconnect by closing the body
-				resp.Body.Close()
-				return
+				if time.Since(lastActivity) > c.HeartbeatTimeout {
+					// silent for the whole window: force reconnect by closing the body
+					resp.Body.Close()
+					return
+				}
 			}
 		}
 	}()
-	lastRead := time.Now()
-	_ = lastRead
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -167,6 +199,7 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 		return ev2(ev, c, handle)
 	}
 	for scanner.Scan() {
+		lastActivity = time.Now()
 		line := scanner.Text()
 		if line == "" {
 			if err := flush(); err != nil {

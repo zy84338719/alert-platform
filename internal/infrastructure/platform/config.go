@@ -78,6 +78,9 @@ type Config struct {
 
 	// HUATUO collector (HT-001).
 	HuatuoSSEURL    string `yaml:"huatuo_sse_url" env:"ALERT_HUATUO_SSE_URL" default:""`
+	// P0-04: official /v1/events/watch is POST + JSON body + Bearer token.
+	HuatuoToken    string `yaml:"huatuo_token" env:"ALERT_HUATUO_TOKEN" default:""`
+	HuatuoTracer   string `yaml:"huatuo_tracer_filter" env:"ALERT_HUATUO_TRACER_FILTER" default:""`
 	HuatuoTenantID  string `yaml:"huatuo_tenant_id" env:"ALERT_HUATUO_TENANT_ID" default:""`
 	HuatuoSourceID  string `yaml:"huatuo_source_id" env:"ALERT_HUATUO_SOURCE_ID" default:""`
 	HuatuoClusterID string `yaml:"huatuo_cluster_id" env:"ALERT_HUATUO_CLUSTER_ID" default:""`
