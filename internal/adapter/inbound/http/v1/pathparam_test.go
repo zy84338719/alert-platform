@@ -24,6 +24,10 @@ type echoQueryStore struct {
 func (e *echoQueryStore) ListAlerts(context.Context, query.AlertFilter) (query.Page[query.Alert], error) {
 	return query.Page[query.Alert]{}, nil
 }
+
+func (e *echoQueryStore) ListEvents(context.Context, query.EventFilter) ([]query.Event, error) {
+	return nil, nil
+}
 func (e *echoQueryStore) GetAlertByID(_ context.Context, instanceID string) (*query.Alert, error) {
 	e.seenID = instanceID
 	return &query.Alert{InstanceID: instanceID, TenantID: "tenant-x", Name: "echo"}, nil

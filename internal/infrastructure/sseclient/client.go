@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"sync/atomic"
 	"errors"
 	"fmt"
 	"io"
@@ -161,7 +162,9 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 	// force-disconnected; a silent one is reconnected after the timeout.
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	lastActivity := time.Now()
+	// atomic: the scanner goroutine writes, the watchdog reads (P1 race hygiene)
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
 	go func() {
 		// check at 1/4 of the window so the detected stall is <= timeout
 		interval := c.HeartbeatTimeout / 4
@@ -175,7 +178,8 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 			case <-watchCtx.Done():
 				return
 			case <-t.C:
-				if time.Since(lastActivity) > c.HeartbeatTimeout {
+				last := time.Unix(0, lastActivity.Load())
+				if time.Since(last) > c.HeartbeatTimeout {
 					// silent for the whole window: force reconnect by closing the body
 					resp.Body.Close()
 					return
@@ -199,7 +203,7 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 		return ev2(ev, c, handle)
 	}
 	for scanner.Scan() {
-		lastActivity = time.Now()
+		lastActivity.Store(time.Now().UnixNano())
 		line := scanner.Text()
 		if line == "" {
 			if err := flush(); err != nil {
