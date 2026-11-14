@@ -79,3 +79,15 @@ CHAOS-003,P6,W19,P0,Architecture,2,RC 审查和变更冻结,P0/P1 缺陷/Schema 
 REL-001,P6,W20,P0,SRE,3,Shadow 与渐进式切换,按规则小比例接管通知/监测双发,可回滚上游通知权,CHAOS-003,DONE
 REL-002,P6,W20,P0,QA,3,生产对账与回滚演练,告警数量、恢复、通知、事故流,差异可解释且无阻断缺陷,REL-001,DONE
 REL-003,P6,W20,P0,Architecture,3,Go/No-Go 评审与 v1.0 发布,SLO、可靠性、审计、培训与移交,签署验收、归档和运维交接,REL-002,REVIEW
+P7-001,P7,W21,P0,Backend-Core,3,Alertmanager 事件身份/观察身份分离,EventKey 改 amobs- 观察键（fingerprint+signal+rule+startsAt 哈希）fingerprint 留 external_event_id,真实 PG Firing→重复→Resolved→新周期全绿,ARC-003,DONE
+P7-002,P7,W21,P0,Edge-Core,3,Edge WAL ACK 位图与 Compact 原子切换,逐记录确认位图+可恢复原子切换（写新→fsync→rename→fsync 目录→删旧）,跳跃 ACK+崩溃注入+断网补传零丢失,EDGE-001,DONE
+P7-003,P7,W21,P0,Security,2,内部 Ingest 鉴权与身份权威绑定,SourceRegistry 凭证+服务端权威覆盖 tenant/source/cluster,401/403/跨租户伪造全拒且合法链路回归绿,AUTH-001,DONE
+P7-004,P7,W21,P0,Backend-Integration,3,HUATUO POST SSE + CloudEvents,SSE Client POST+Bearer+filters；collector 按 CloudEvents 1.0 解码；契约固化入库,官方样本契约测试+心跳保活+断线重连全过,HT-001,DONE
+P7-005,P7,W21,P0,Backend-Core,2,HUATUO 身份/Occurrence 持久化,容器/节点身份映射 ResourceRef；迁移 0007 event_history+查询面,occurrence 可查询且 promoted firing 指纹成功,P7-004,DONE
+P7-006,P7,W21,P0,Backend-Governance,1,发送前静默复核修复,全候选任一命中即抑制+starts_at 时间窗,多规则/未生效/已结束矩阵全绿,NOTI-002,DONE
+P7-007,P7,W21,P0,Backend-Governance,2,Shadow→Active 禁补发历史通知,通知所有权生效时间+claim createdAfter 截断,shadow 历史任务不发送且新任务正常,REL-001,DONE
+P7-008,P7,W21,P1,Backend-Core,2,Kafka 分区键与批量语义修正,key=tenant+服务端指纹；批量语义=至少一次+消费端幂等文档化,同告警保序同分区且多告警扩散；部分成功重试幂等,PERF-002,DONE
+P7-009,P7,W21,P1,Backend-Governance,2,通知 Lease Fencing,迁移 0008 lease_token+完成操作所有权条件更新,双 Worker 竞争+迟到完成矩阵 -race 通过,P7-007,DONE
+P7-010,P7,W21,P1,Platform,2,Worker 后台任务故障传播,worker.TaskGroup 监督组+readiness runtime check,关键任务 fail-stop+panic 传播+辅助降级矩阵通过,P1-04,DONE
+P7-011,P7,W21,P1,SRE,2,NetworkPolicy 按组件拆分,api/worker/edge 三策略+per-component extraEgress,chart 矩阵+rpi-k3s 实测（edge→api 通/外呼拒）,CHAOS-002,DONE
+P7-012,P7,W21,P1,Backend-Integration,1,DeepFlow v7.2.4 基线,v7.2.4 契约目录+跨版本等价测试（取证：proto 双 tag 一致）,v7.2.4 golden/negative/parity 测试通过,ARC-002,DONE

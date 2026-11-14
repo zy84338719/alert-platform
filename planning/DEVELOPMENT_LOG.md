@@ -623,3 +623,31 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - **EDGE-003 → DONE**（终态 DONE×71 / REVIEW×4 / BLOCKED×5）。
 - MC-001 四集群中 dev 区已实证，其余三区仍 BLOCKED（无 kubeconfig/registry 通道）；worker 待集群 Kafka 接入。
 - 诚实注记：镜像经 4 轮迭代（命令路径→缺二进制→缺 migrations→模板字段）才到首装即过——上述 bug 均已修复入仓，当前 chart 全新安装一次成功。
+
+---
+
+## 2026-11-15 · R16：P7 可靠性加固 12 项全量关闭（P0×7 + P1×5，外部评审 3.5/10 → 整改落地）
+
+### 交付（13 commits，rh-p0-01 … rh-p1-05 + 验收修复；任务书表格已逐行回填）
+
+- **第一批阻断项**：P0-01 Alertmanager 观察身份分离（Resolved 不再被 receipts 吞）→ P0-02 WAL 逐记录确认位图 + Compact 原子切换（四个崩溃窗口 kill -9 注入零丢失）→ P0-03 Ingest 凭证鉴权 + 服务端权威身份（401/403/伪造全拒）。
+- **HUATUO 链路**：P0-04 官方 POST SSE + CloudEvents 1.0（docs.huatuo.tech 逐字取证固化 contracts/external/huatuo/v1）+ 心跳看门狗改最后活跃基准；P0-05 容器/节点身份映射（指纹不再 incomplete）+ 迁移 0007 event_history + GET /events/v1。
+- **通知链路**：P0-06 静默复核 LIMIT 1/时间窗双缺陷；P0-07 shadowCutoff 禁补发历史通知（红验证：去 cutoff→红）；P1-02 lease_token fencing（迁移 0008，迟到完成仅审计）。
+- **平台化**：P1-01 Kafka key=tenant+指纹（旧码 20 告警钉 1 分区→扩散）+ 至少一次语义文档化；P1-03 worker.TaskGroup（panic 捕获/fail-stop/readiness 接入）；P1-04 NetworkPolicy 三策略拆分 + rpi-k3s REVISION 2 实测（edge→api 200、1.1.1.1 拒绝）；P1-05 v7.2.4 基线（gh api 取证 proto 双 tag sha256 一致，契约等价测试，适配族不动）。
+
+### 验收证据（2026-11-15 复跑）
+
+| 项 | 结果 |
+| --- | --- |
+| `go test ./...`（PG/Kafka 集成 resident deps） | 全绿（19 包） |
+| `go test -race ./...` | 全绿 EXIT=0（顺手修掉 sseclient 心跳 lastActivity 与 memWAL 两处存量竞态） |
+| `buf lint/build/breaking --against origin/main` | 通过（本轮零 IDL 变更） |
+| `scripts/validate_package.py` / `check_deps.py` | OK（92 backlog items / 34 包依赖规则） |
+| chart 策略矩阵 + rpi-k3s 实测 | PASS + REVISION 2 连通矩阵 |
+| 失败测试先行 | 每项均有旧码可复现的失败测试（P0-07 另做去修复→红的判别力验证）；P0-02 崩溃窗口测试随修复落地（注记于表） |
+
+### 状态与挂账
+
+- 任务书 §5 全表 **DONE×12**；§4 四项硬门槛全部关闭。
+- 仍挂账（非本轮范围）：ARC-002 真实 DeepFlow 样本、HUATUO 真实环境联调、真实通知沙箱、四集群实装、ClickHouse 归档实跑、生产 10min 压测复跑（P6-GoNoGo §4 五项不变）。
+- 兼容性注记：event_receipts 旧 key（fingerprint）数据无需迁移——新观察键命不中旧收据时走重复观察更新，语义自愈；lease_token 空 = pre-0008 行为；P0-03 上线前 Edge 需同步配置上传凭证（docs/12 §Edge 上传凭证）。

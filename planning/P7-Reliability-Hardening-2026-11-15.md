@@ -189,18 +189,18 @@
 
 | ID | 任务 | 状态 | 分支/Commit | 测试证据 | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| P0-01 | Alertmanager 事件身份 | TODO | | | 先失败测试 |
-| P0-02 | Edge WAL ACK/Compact | TODO | | | 先失败测试 |
-| P0-03 | Ingest 鉴权 | TODO | | | 先失败测试 |
-| P0-04 | HUATUO POST SSE/CloudEvents | TODO | | | 依赖真实契约样本 |
-| P0-05 | HUATUO 身份/Occurrence 持久化 | TODO | | | 依赖 P0-04 |
-| P0-06 | 静默复核漏匹配 | TODO | | | |
-| P0-07 | Shadow 历史通知风暴 | TODO | | | |
-| P1-01 | Kafka 分区/批量语义 | TODO | | | |
-| P1-02 | 通知 Lease Fencing | TODO | | | |
-| P1-03 | Worker 故障传播 | TODO | | | |
-| P1-04 | NetworkPolicy 拆分 | TODO | | | rpi-k3s 实测 |
-| P1-05 | DeepFlow v7.2.4 | TODO | | | 依赖 ARC-002 |
+| P0-01 | Alertmanager 事件身份 | DONE | 6a02707 | TestAlertmanagerEpisodeLifecycle（真实 PG：Firing→重复→Resolved→新周期全绿）+ TestAlertManagerObservationKeys | 观察键 amobs-（fingerprint+signal+rule+startsAt）；fingerprint 留 external_event_id |
+| P0-02 | Edge WAL ACK/Compact | DONE | ce08da7 | TestSkippedAckKeepsRejectedRecord + TestCompactCrashWindowsRecover（before/after-rename 双窗口 kill -9 注入零丢失）+ TestOutageReplayNoLossAroundRejectedRecord（real WAL+HTTP）| Ack=逐记录确认位图；Compact=写新→fsync→rename→fsync 目录→删旧 |
+| P0-03 | Ingest 鉴权 | DONE | 4d0716e | TestIngestAuthMatrix（401/403/伪造/回填）+ TestIngestAuthRejectsDisabledSource + TestGeneratedRoutesIngestRequiresAuth；DeepFlow/AM webhook 回归绿 | SourceRegistry 凭证 + 服务端权威覆盖；docs/12 凭证分发 |
+| P0-04 | HUATUO POST SSE/CloudEvents | DONE | 44079cd | TestWatchHandshakePOSTBodyBearer + TestHeartbeatKeepAliveWhileStreaming + TestCloudEventsContractMapping；契约固化 contracts/external/huatuo/v1 | 官方文档逐字取证（docs.huatuo.tech CC BY 4.0）；真实 HUATUO 联调另挂 |
+| P0-05 | HUATUO 身份/Occurrence 持久化 | DONE | 831ca64 | TestHuatuoOccurrencePersistedToEventHistory + TestHuatuoBurstFiringFingerprintSucceeds（真实 PG） | 迁移 0007 event_history + ListEvents + GET /events/v1 |
+| P0-06 | 静默复核漏匹配 | DONE | 2bf5563 | TestSuppressNotifyAtSendMultiRuleMatrix（三缺陷路径旧码红→修复绿，独立租户隔离） | LIMIT 1→全候选；starts_at<=now() |
+| P0-07 | Shadow 历史通知风暴 | DONE | 51551e9 | TestShadowToActiveNoHistoryReplay（红验证：去 cutoff→红）+ TestClaimNotifyTasksCreatedAfterCutoff（真实 PG） | shadowCutoff + createdAfter 截断；零 cutoff 兼容 |
+| P1-01 | Kafka 分区/批量语义 | DONE | 3d81e18 | TestPartitionKeySpreadsLogicalAlerts（旧码红：20 告警钉 1 分区）+ TestBatchPartialSuccessRetryIdempotent | key=tenant+指纹；语义=至少一次+消费端幂等 |
+| P1-02 | 通知 Lease Fencing | DONE | 28594b6 | TestFinishNotifyTaskLeaseFencing（迟到完成仅审计、owner 不被覆盖，-race） | 迁移 0008 lease_token；ErrStaleNotifyLease |
+| P1-03 | Worker 故障传播 | DONE | 7c9da8b | TestCriticalTaskFailureStopsGroup / TestTaskPanicIsFailStop / TestNonCriticalFailureDegradesReadiness（-race） | worker.TaskGroup；background-tasks 接入 readyz |
+| P1-04 | NetworkPolicy 拆分 | DONE | cc6af63 | scripts/test_chart_policies.py（三策略/选择器/DNS/extraEgress 无泄漏）；rpi-k3s REVISION 2 实测：edge→api 200、1.1.1.1 拒绝、api 健康 | worker 通知外呼走 workerExtraEgress |
+| P1-05 | DeepFlow v7.2.4 | DONE | 8ae530d | TestDeepFlowV724Baseline + TestDeepFlowV723V724ContractParity | gh api 取证 proto 双 tag sha256 一致；ARC-002 真实样本仍挂账 |
 
 ---
 
