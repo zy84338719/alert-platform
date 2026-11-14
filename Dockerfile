@@ -47,13 +47,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM ${RUN_IMAGE} AS runtime
 # Non-root runtime user (docs/08 security baseline).
 RUN addgroup -S app && adduser -S -G app app
-COPY --from=build /out/alert-api /out/alert-worker /out/alert-edge /usr/local/bin/
+COPY --from=build /out/alert-api /out/alert-worker /out/alert-edge /out/alert-migrate /usr/local/bin/
 
 # Ship the dev config baseline so the image runs out of the box; deployments
 # override via env (env > YAML > default, platform.Config) or by mounting a
 # ConfigMap over /app/etc/config.yaml and passing -config.
 WORKDIR /app
 COPY --chown=app:app etc/ etc/
+# alert-migrate's default -dir is the relative path "migrations" (CWD=/app).
+COPY --chown=app:app migrations/ migrations/
 
 USER app
 # Default entry; override per component (alert-worker / alert-edge).

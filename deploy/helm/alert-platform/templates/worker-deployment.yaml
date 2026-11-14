@@ -17,11 +17,15 @@ spec:
       labels: {{- include "alert-platform.labels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: worker
           image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/app/alert-worker"]
+          command: ["alert-worker"]  # binaries live in /usr/local/bin (Dockerfile)
           ports:
             - name: http
               containerPort: 8081

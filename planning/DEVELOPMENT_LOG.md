@@ -595,3 +595,31 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - ARC-001（ADR×4 翻已接受——接受依据=决策经八轮实现实证）、ARC-004、BASE-001~004（CI run 43555832409）、BASE-008、PROC-007（解释差裁决：hz stub+手写体符合仓约定）、MVP-003、MC-004、BUF-003、BUF-004、INC-009 → **DONE×13**。
 - 保持 REVIEW×5（ING-001/NOTI-002/EDGE-003/INC-007/REL-003）——每项缺的都是人/外部资源；REL-003 的 Owner 签署是唯一留给用户的动作。
 - **终态：DONE×70 / REVIEW×5 / BLOCKED×5**。
+
+---
+
+## 2026-11-15 · R15：EDGE-003 dev 集群实装（helm install REVISION 1 一次成功）
+
+### 交付
+
+- **rpi-k3s 集群接入**（记忆中的 kubeconfig `~/.kube/rpi-k3s.yaml` 终于用上）：无集群内 registry → **节点导入法**交付镜像（特权 pod 挂 k3s containerd socket + 宿主 ctr 导入 k8s.io ns，runbook 写入 docs/12）。
+- **chart 修复三处实装 bug**：① 四个模板 `command: /app/<bin>` 路径全错（二进制在 /usr/local/bin）；② Dockerfile runtime 漏 COPY alert-migrate 与 migrations/ 目录（hook job 两次失败的真因）；③ edge STS 的 `volumeClaimTemplates: []` 误写进 container 致 server-side apply 拒绝。另：NetworkPolicy 补同命名空间出向放行（edge→api、api→dev-pg 同 ns）、edge 网关容忍 sources 文件缺失（不再 crash-loop）、values-dev 为真实集群配置（worker 因无 Kafka 置 disabled、nodeSelector 钉 rpi4-011）。
+- **chart 增 nodeSelector 透传**（values + 四模板）。
+
+### EDGE-003 验收（全过）
+
+| 项 | 证据 |
+| --- | --- |
+| helm install 一次成功 | 卸载后全新 `helm install --wait` → **REVISION 1, Install complete** |
+| PDB 生效 | `pdb/ap-dev-alert-platform-api minAvailable=1`（Allowed Disruptions 0） |
+| NetworkPolicy 生效 | 同 ns 出向通（edge→api healthz 200）、外向 1.1.1.1 拒绝、api 在策略下 Ready（DNS/PG 正常） |
+| PVC 生效 | `wal-ap-dev-alert-platform-edge-0 Bound 1Gi local-path` |
+| 磁盘水位指标上报 | edge `/metrics`：`alert_platform_edge_wal_bytes` + `wal_pending_records`；healthz ok |
+
+集群侧配套：集群内 dev-pg（Deployment+PVC+Service，postgres:16-alpine）、migrate hook Complete。
+
+### 状态
+
+- **EDGE-003 → DONE**（终态 DONE×71 / REVIEW×4 / BLOCKED×5）。
+- MC-001 四集群中 dev 区已实证，其余三区仍 BLOCKED（无 kubeconfig/registry 通道）；worker 待集群 Kafka 接入。
+- 诚实注记：镜像经 4 轮迭代（命令路径→缺二进制→缺 migrations→模板字段）才到首装即过——上述 bug 均已修复入仓，当前 chart 全新安装一次成功。

@@ -90,7 +90,11 @@ func NewGateway(sourcesFile string, buf Buffer) (*Gateway, error) {
 	g := &Gateway{reg: &registry{byToken: map[string]LocalSource{}}, wal: buf}
 	if sourcesFile != "" {
 		if err := g.reg.load(sourcesFile); err != nil {
-			return nil, err
+			if !os.IsNotExist(err) {
+				return nil, err // malformed file: fail fast
+			}
+			// Missing file = no sources registered yet: every push gets a 401
+			// until the secret mounts. Dev installs must not crash-loop on it.
 		}
 	}
 	return g, nil

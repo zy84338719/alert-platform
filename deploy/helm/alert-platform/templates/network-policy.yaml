@@ -12,6 +12,9 @@ spec:
       app.kubernetes.io/instance: {{ .Release.Name }}
   policyTypes: [Egress]
   egress:
+    # Same namespace first: edge→api and api→dev dependencies live here.
+    - to:
+        - podSelector: {}
     - to:
         - namespaceSelector:
             matchLabels:

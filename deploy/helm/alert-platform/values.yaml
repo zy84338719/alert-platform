@@ -6,6 +6,10 @@ image:
   tag: "0.3.0-dev"
   pullPolicy: IfNotPresent
 
+# Pin all pods to one node when the image is delivered by node-local import
+# (no registry in the dev cluster); empty = schedule anywhere.
+nodeSelector: {}
+
 # Central components (api + worker). Edge runs per-cluster with mode=gateway.
 api:
   enabled: true

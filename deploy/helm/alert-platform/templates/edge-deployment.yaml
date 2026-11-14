@@ -18,11 +18,15 @@ spec:
       labels: {{- include "alert-platform.labels" . | nindent 8 }}
         app.kubernetes.io/component: edge
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: edge
           image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/app/alert-edge"]
+          command: ["alert-edge"]  # binaries live in /usr/local/bin (Dockerfile)
           ports:
             - name: http
               containerPort: 8082
@@ -51,9 +55,6 @@ spec:
             - name: edge-sources
               mountPath: /etc/edge
               readOnly: true
-          # Disk waterline self-alerting: the WAL gauge on /metrics plus this
-          # eviction threshold keep a full disk from taking the node down.
-          volumeClaimTemplates: []
       volumes:
         - name: edge-sources
           secret:

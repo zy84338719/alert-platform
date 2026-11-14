@@ -17,11 +17,15 @@ spec:
       labels: {{- include "alert-platform.labels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: api
           image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/app/alert-api"]
+          command: ["alert-api"]  # binaries live in /usr/local/bin (Dockerfile)
           ports:
             - name: http
               containerPort: 8080

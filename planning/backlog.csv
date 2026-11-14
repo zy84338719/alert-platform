@@ -43,7 +43,7 @@ MVP-003,P3,W09,P0,Architecture,2,MVP 阶段评审,状态一致性/接口兼容/�
 UI-003,P4,W10,P1,Frontend,3,通知管理界面,渠道/规则/发送记录/失败过滤,操作可完成并有权限校验,NOTI-002,DONE
 EDGE-001,P4,W10,P0,Backend-Integration,7,Edge 本地 WAL/SQLite 队列,append/fsync/ack/upload/confirmed/compact,断网重启后缓冲仍在,BASE-006,DONE
 EDGE-002,P4,W10,P0,Backend-Integration,5,Edge Uploader 与重试,mTLS/批次稳定 ID/指数退避/限速,中心 503 后自动补传,EDGE-001,DONE
-EDGE-003,P4,W10,P0,SRE,2,Edge Helm 与存储模板,PVC、PDB、Requests、NetworkPolicy,开发集群可运行且磁盘监控正常,EDGE-001,REVIEW
+EDGE-003,P4,W10,P0,SRE,2,Edge Helm 与存储模板,PVC、PDB、Requests、NetworkPolicy,开发集群可运行且磁盘监控正常,EDGE-001,DONE
 EDGE-004,P4,W10,P0,QA,2,本地故障及容量测试,磁盘满/断网/重启/重复 ACK,不能对未持久化事件回答成功,EDGE-001,DONE
 DASH-001,P4,W11,P1,Frontend,3,总览 Dashboard,当前告警/严重/故障/通知失败/来源健康,关键运营指标一屏可见,"UI-001,PROC-006",DONE
 HT-001,P4,W11,P0,Backend-Integration,6,HUATUO SSE Subscriber,CloudEvents、重连、心跳、源异常,实时 3 类内核事件可看到,EDGE-002,DONE

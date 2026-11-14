@@ -13,12 +13,16 @@ spec:
   backoffLimit: 3
   template:
     spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       restartPolicy: OnFailure
       containers:
         - name: migrate
           image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/app/alert-migrate"]
+          command: ["alert-migrate"]  # binaries live in /usr/local/bin (Dockerfile)
           env:
             {{- range $k, $v := .Values.migrate.env }}
             - name: {{ $k }}
