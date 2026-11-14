@@ -47,7 +47,9 @@ func (f *fakeRegistry) RevokeCredentials(_ context.Context, _, _ string) error  
 func (f *fakeRegistry) FindByTokenHash(_ context.Context, tokenHash string) (*sourcereg.Source, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.source != nil && tokenHash == sourcereg.TokenHash(f.token) && f.source.Enabled {
+	// Mirrors the real store: only REVOKED credentials vanish here; the
+	// disabled flag is decided by the service layer (ErrDisabled -> 403).
+	if f.source != nil && tokenHash == sourcereg.TokenHash(f.token) {
 		return f.source, nil
 	}
 	return nil, sourcereg.ErrNotFound

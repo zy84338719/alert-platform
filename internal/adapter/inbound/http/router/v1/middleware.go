@@ -4,6 +4,8 @@ package v1
 
 import (
 	"github.com/cloudwego/hertz/pkg/app"
+
+	httpv1 "github.com/example/alert-platform/internal/adapter/inbound/http/v1"
 )
 
 func rootMw() []app.HandlerFunc {
@@ -12,8 +14,9 @@ func rootMw() []app.HandlerFunc {
 }
 
 func _ingestMw() []app.HandlerFunc {
-	// your code...
-	return nil
+	// P0-03: internal ingest authenticates the edge credential and binds the
+	// server-authoritative tenant/source identity (see httpv1.IngestAuthMiddleware).
+	return []app.HandlerFunc{httpv1.IngestAuthMiddleware()}
 }
 
 func _v1Mw() []app.HandlerFunc {

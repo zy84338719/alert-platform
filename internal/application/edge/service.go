@@ -37,26 +37,34 @@ type Record struct {
 
 // Uploader drains one WAL into the central ingest endpoint.
 type Uploader struct {
-	wal       WAL
-	client    *http.Client
-	endpoint  string // central /ingest/v1/events:batch URL
-	batch     int
-	rateEvery time.Duration // min spacing between uploads (rate cap)
-	edgeKey   string         // optional shared edge key header (mTLS supersedes it)
+	wal          WAL
+	client       *http.Client
+	endpoint     string // central /ingest/v1/events:batch URL
+	batch        int
+	rateEvery    time.Duration     // min spacing between uploads (rate cap)
+	edgeKey      string            // default upload credential + heartbeat key
+	sourceTokens map[string]string // per-source upload credentials (P0-03)
 
 	// Heartbeat (MC-002): report the WAL waterline to the center every minute.
-	HeartbeatURL    string
-	HeartbeatIdent  struct {
-		TenantID  string
-		SourceID  string
+	HeartbeatURL   string
+	HeartbeatIdent struct {
+		TenantID string
+		SourceID string
 	}
 }
 
 // UploaderConfig wires the uploader.
 type UploaderConfig struct {
 	Endpoint string
-	EdgeKey  string
-	Batch    int
+	// EdgeKey authenticates uploads and heartbeats (P0-03: uploads send it as
+	// the Authorization bearer — the server binds the payload identity to the
+	// credential; X-Edge-Key stays heartbeat-only).
+	EdgeKey string
+	// SourceTokens overrides the bearer per buffered source id
+	// (multi-source edges: one credential per vendor source). Missing entries
+	// fall back to EdgeKey.
+	SourceTokens map[string]string
+	Batch        int
 	// RatePerSec caps uploads per second (EDGE-002 限速上限).
 	RatePerSec float64
 	// TLS: client cert/key + CA for mutual auth against the center.
@@ -64,9 +72,9 @@ type UploaderConfig struct {
 	InsecureSkipVerify                    bool
 
 	// Heartbeat (MC-002): center endpoint + identity for waterline reports.
-	HeartbeatURL       string
-	HeartbeatTenantID  string
-	HeartbeatSourceID  string
+	HeartbeatURL      string
+	HeartbeatTenantID string
+	HeartbeatSourceID string
 }
 
 // NewUploader builds the uploader (TLS files optional).
@@ -102,7 +110,8 @@ func NewUploader(w WAL, cfg UploaderConfig) (*Uploader, error) {
 	}
 	u := &Uploader{
 		wal: w, endpoint: cfg.Endpoint, batch: batch, rateEvery: every, edgeKey: cfg.EdgeKey,
-		client: &http.Client{Timeout: 15 * time.Second, Transport: transport},
+		sourceTokens: cfg.SourceTokens,
+		client:       &http.Client{Timeout: 15 * time.Second, Transport: transport},
 	}
 	if cfg.HeartbeatURL != "" {
 		u.HeartbeatURL = cfg.HeartbeatURL
@@ -184,8 +193,11 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 			return sent, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if u.edgeKey != "" {
-			req.Header.Set("X-Edge-Key", u.edgeKey)
+		// P0-03: the center authenticates the upload credential and binds the
+		// payload identity to it — send the credential matching this record's
+		// source (fallback: the shared edge key).
+		if tok := u.tokenFor(rec.SourceID); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 		resp, err := u.client.Do(req)
 		if err != nil {
@@ -215,6 +227,16 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 		}
 	}
 	return sent, nil
+}
+
+// tokenFor resolves the upload credential for one buffered source.
+func (u *Uploader) tokenFor(sourceID string) string {
+	if sourceID != "" {
+		if tok, ok := u.sourceTokens[sourceID]; ok && tok != "" {
+			return tok
+		}
+	}
+	return u.edgeKey
 }
 
 // Stats exposes the buffer waterline (EDGE-003 磁盘水位指标).

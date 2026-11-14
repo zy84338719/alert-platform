@@ -1,9 +1,9 @@
 // Command alert-edge runs the edge component (docs/02 §2):
 //
-//   gateway mode   — vendor webhooks -> local auth -> translate -> WAL
-//                    (fsync before 202, EDGE-001) -> uploader -> central API.
-//   collector mode — HUATUO SSE stream -> occurrence/gap handling -> WAL
-//                    (HT-001/003/004) -> uploader.
+//	gateway mode   — vendor webhooks -> local auth -> translate -> WAL
+//	                 (fsync before 202, EDGE-001) -> uploader -> central API.
+//	collector mode — HUATUO SSE stream -> occurrence/gap handling -> WAL
+//	                 (HT-001/003/004) -> uploader.
 //
 // The WAL is the durability boundary: the uploader retransmits with stable
 // transport ids and the center's receipts absorb duplicates (EDGE-002).
@@ -75,13 +75,13 @@ func main() {
 		}()
 
 		uploader, err := edge.NewUploader(log, edge.UploaderConfig{
-			Endpoint:       cfg.APIOrigin + "/ingest/v1/events:batch",
-			EdgeKey:        cfg.EdgeAPIKey,
-			RatePerSec:     cfg.EdgeUploadRate,
-			ClientCertFile: cfg.EdgeClientCert,
-			ClientKeyFile:  cfg.EdgeClientKey,
-			CAFile:         cfg.EdgeCAFile,
-			HeartbeatURL:   cfg.APIOrigin + "/edge/v1/heartbeat",
+			Endpoint:          cfg.APIOrigin + "/ingest/v1/events:batch",
+			EdgeKey:           cfg.EdgeAPIKey, // P0-03: uploads send this as the bearer credential; multi-source edges add per-source SourceTokens
+			RatePerSec:        cfg.EdgeUploadRate,
+			ClientCertFile:    cfg.EdgeClientCert,
+			ClientKeyFile:     cfg.EdgeClientKey,
+			CAFile:            cfg.EdgeCAFile,
+			HeartbeatURL:      cfg.APIOrigin + "/edge/v1/heartbeat",
 			HeartbeatTenantID: cfg.HuatuoTenantID,
 			HeartbeatSourceID: cfg.HeartbeatSourceID,
 		})
