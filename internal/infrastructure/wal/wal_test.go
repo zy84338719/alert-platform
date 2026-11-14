@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"path/filepath"
@@ -113,8 +114,11 @@ func TestCapacityFullFailsClosed(t *testing.T) {
 		break
 	}
 	// Acked + compacted space is reclaimed: appends succeed again.
+	// (P0-02: per-record acks — confirm the whole prefix, as the uploader does.)
 	p, _ := l.Pending()
-	l.Ack(p[len(p)-1].Seq)
+	for _, r := range p {
+		l.Ack(r.Seq)
+	}
 	if err := l.Compact(); err != nil {
 		t.Fatal(err)
 	}
@@ -129,14 +133,10 @@ func TestCompactNoHoles(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		l.Append(rec(string(rune('a'+i)), "x"))
 	}
-	p, _ := l.Pending()
-	// ack everything except records 3 and 7
-	l.Ack(1) // ack 0..1
-	ackTo := func(seq uint64) { l.Ack(seq) }
-	ackTo(2) // 0..2 acked; 3 pending
-	// ack 4..6 and 8..9 are still pending — watermark semantics ack prefix:
-	// emulate by acking only prefix 0..2 here
-	_ = p
+	// P0-02 per-record acks: confirm prefix 0..2 exactly like the uploader.
+	l.Ack(0)
+	l.Ack(1)
+	l.Ack(2)
 	if err := l.Compact(); err != nil {
 		t.Fatal(err)
 	}
@@ -159,5 +159,92 @@ func TestAckMonotonic(t *testing.T) {
 	got, _ := l.Pending()
 	if len(got) != 0 {
 		t.Fatalf("ack rewound: %+v", got)
+	}
+}
+
+// P0-02 (rh-p0-02) 失败测试①：跳跃 ACK。uploader 对 seq 1 的 HTTP 400 拒单
+// 不确认、seq 2 成功确认 —— Ack 是"逐记录确认"，水位只能推进到最长连续确认
+// 前缀；旧实现 Ack(2) 直接把水位抬到 2，被拒的 seq 1 连同 seq 0 一起被
+// Compact 清掉（断网缓冲告警丢失）。
+func TestSkippedAckKeepsRejectedRecord(t *testing.T) {
+	l := newLog(t, 0)
+	for i := 0; i < 3; i++ {
+		if _, err := l.Append(rec(fmt.Sprintf("b%d", i), "payload")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Ack(0) // seq 0 accepted
+	l.Ack(2) // seq 1 REJECTED (no ack); seq 2 accepted
+	got, _ := l.Pending()
+	// seq 2 is confirmed above the hole: not re-pended (center already has it)
+	if len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("pending after skipped ack = %+v, want [seq 1] only", got)
+	}
+	if err := l.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = l.Pending()
+	if len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("pending after compact = %+v, want [seq 1] — the rejected record must survive", got)
+	}
+	// the hole closes only when seq 1 is finally confirmed
+	l.Ack(1)
+	if got, _ = l.Pending(); len(got) != 0 {
+		t.Fatalf("pending after closing ack = %+v, want empty", got)
+	}
+}
+
+// P0-02 (rh-p0-02) 失败测试②：Compact 崩溃注入 + 重启恢复。Compact 在每个阶段
+// 边界以 panic 模拟 kill -9（磁盘状态与真实进程死亡一致：已 fsync 的都在），
+// 重启后必须恢复全部未确认记录，任何崩溃窗口零丢失。
+func TestCompactCrashWindowsRecover(t *testing.T) {
+	for _, window := range []string{"before-rename", "after-rename"} {
+		t.Run(window, func(t *testing.T) {
+			dir := t.TempDir()
+			l, err := Open(dir, 0, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 10; i++ {
+				if _, err := l.Append(rec(fmt.Sprintf("b%d", i), "payload")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// uploader 语义：前缀 0..6 已确认，7..9 未确认
+			for s := uint64(0); s <= 6; s++ {
+				l.Ack(s)
+			}
+			switch window {
+			case "before-rename":
+				l.crashBeforeRename = func() { panic("kill -9 before rename") }
+			case "after-rename":
+				l.crashAfterRename = func() { panic("kill -9 after rename") }
+			}
+			func() {
+				defer func() { _ = recover() }() // 进程级死亡等价
+				_ = l.Compact()
+			}()
+			// 重启：从崩溃留下的磁盘状态恢复（不用旧实例的任何内存状态）
+			l2, err := Open(dir, 0, 1<<20)
+			if err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			t.Cleanup(func() { _ = l2.Close() })
+			got, err := l2.Pending()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 重启后 ack 水位归零是既有设计（全量重传、中央 receipts 幂等吸收）；
+			// 崩溃安全的断言是零丢失：compact 前存在的每条记录（0..9）重启后
+			// 仍可读、各出现一次（崩溃窗口的瞬态重复帧被去重）。
+			if len(got) != 10 {
+				t.Fatalf("recovered %d records after crash-in-compact, want all 10 (zero loss): %+v", len(got), got)
+			}
+			for i, r := range got {
+				if r.Seq != uint64(i) {
+					t.Fatalf("recovered seq %d at %d — sequence corrupted", r.Seq, i)
+				}
+			}
+		})
 	}
 }

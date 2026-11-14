@@ -14,28 +14,53 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// memWAL mirrors the real WAL contract after P0-02: Ack confirms ONE record;
+// the watermark advances only across the longest contiguous confirmed prefix.
+// Methods are mutex-guarded: Run() drains in a goroutine (TestUploaderRateCap).
 type memWAL struct {
-	recs []Record
-	ack  int64
+	mu    sync.Mutex
+	recs  []Record
+	ack   int64
+	acked map[uint64]struct{}
 }
 
 func (m *memWAL) Pending() ([]Record, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var out []Record
 	for _, r := range m.recs {
 		if int64(r.Seq) > m.ack {
+			if _, done := m.acked[r.Seq]; done {
+				continue // confirmed above a hole: no retransmit
+			}
 			out = append(out, r)
 		}
 	}
 	return out, nil
 }
 func (m *memWAL) Ack(seq uint64) {
-	if int64(seq) > m.ack {
-		m.ack = int64(seq)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.acked == nil {
+		m.acked = map[uint64]struct{}{}
+	}
+	if int64(seq) <= m.ack {
+		return
+	}
+	m.acked[seq] = struct{}{}
+	for {
+		next := uint64(m.ack + 1)
+		if _, ok := m.acked[next]; !ok {
+			break
+		}
+		delete(m.acked, next)
+		m.ack = int64(next)
 	}
 }
 func (m *memWAL) Compact() error      { return nil }
@@ -53,7 +78,7 @@ func TestUploaderAcksOn202(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
-	w := &memWAL{recs: []Record{batch("b1", 1)}}
+	w := &memWAL{recs: []Record{batch("b1", 0)}, ack: -1}
 	u, err := NewUploader(w, UploaderConfig{Endpoint: srv.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +108,7 @@ func TestUploaderRetriesOn503(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
-	w := &memWAL{recs: []Record{batch("same-batch", 7)}}
+	w := &memWAL{recs: []Record{batch("same-batch", 7)}, ack: -1}
 	u, _ := NewUploader(w, UploaderConfig{Endpoint: srv.URL})
 	if _, err := u.DrainOnce(context.Background()); err == nil {
 		t.Fatal("first drain must fail on 503")
