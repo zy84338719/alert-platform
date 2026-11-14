@@ -10,7 +10,9 @@ __pycache__/
 .dev/
 etc/local*.yaml
 .v2c/
-alert-api
-alert-worker
-alert-edge
-alert-migrate
+# 构建产物只锚定仓库根目录（否则会忽略 cmd/alert-api 等同名源码目录）
+/alert-api
+/alert-worker
+/alert-edge
+/alert-migrate
+/loadgen
