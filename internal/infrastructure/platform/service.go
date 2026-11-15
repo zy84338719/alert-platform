@@ -3,7 +3,6 @@ package platform
 import (
 	"context"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -31,16 +30,15 @@ type SetupFn func(h *server.Hertz)
 // and must return promptly once that context is cancelled (graceful shutdown).
 type RunFn func(ctx context.Context) error
 
-// runtimeChecks holds dependency health checks registered by cmd wiring
-// before RunService (e.g. the API's PG ping). They join /healthz + /readyz.
-var runtimeChecks = map[string]func(ctx context.Context) error{}
-var runtimeChecksMu sync.Mutex
-
-// RegisterRuntimeCheck adds a dependency health check surfaced on /healthz.
+// RegisterRuntimeCheck registers a dependency/background health check on the
+// shared healthz registry immediately (P8-P1-01). The probe reads the registry
+// live on every request, so registrations made from inside the component run
+// loop (e.g. the worker's background task group) are observed. Earlier this
+// only filled a local map that RunServiceWith snapshotted BEFORE run(), so a
+// check registered during run() never reached /healthz or /readyz — the worker
+// kept reporting healthy after a background task had died.
 func RegisterRuntimeCheck(name string, check func(ctx context.Context) error) {
-	runtimeChecksMu.Lock()
-	defer runtimeChecksMu.Unlock()
-	runtimeChecks[name] = check
+	healthz.RegisterCheck(name, check)
 }
 
 // RunService wires the shared base (logging, health, metrics, tracing,
@@ -89,14 +87,11 @@ func RunServiceWith(cfg *Config, component, version string, setup SetupFn, run R
 
 		// Health endpoints (bootstrap/healthz contract: all checks pass -> 200,
 		// any hard failure -> 503, soft dependency degraded -> 200 + "degraded").
-		// Base-002 ships a self check; cmd wiring adds runtime dependency
-		// checks (PG/Kafka) via RegisterRuntimeCheck (BASE-005/006, ING-003).
+		// Base-002 ships a self check; cmd wiring adds runtime dependency checks
+		// (PG/Kafka/background tasks) via RegisterRuntimeCheck (BASE-005/006,
+		// ING-003) — healthz reads its registry live, so late registrations from
+		// inside run() (P8-P1-01) are surfaced too.
 		healthz.RegisterCheck("self", func(ctx context.Context) error { return nil })
-		runtimeChecksMu.Lock()
-		for name, check := range runtimeChecks {
-			healthz.RegisterCheck(name, check)
-		}
-		runtimeChecksMu.Unlock()
 		registerProbe := func(path string) {
 			h.GET(path, func(ctx context.Context, c *app.RequestContext) {
 				if path == "/livez" {
