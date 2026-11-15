@@ -678,3 +678,17 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - 任务书 §2/§3/§4 全表 **DONE×11**；backlog 追加 P8-001..011（DONE）+ P8-012（真实集成，BLOCKED）→ 终态 DONE×94 / REVIEW×4 / BLOCKED×6。
 - §5 真实集成仍为**发布门槛**（外部输入）：真实 DeepFlow v7.2.4 Payload、HUATUO 真实联调、四集群、ClickHouse 实跑、飞书/钉钉沙箱、生产 10min 压测——P8 代码侧就绪，不以合成测试关闭。
 - **升级注意（运维）**：① 首次 P8 启动会开新 authority 纪元，迁移前的 pending 通知任务不再补发（保守选择：宁可一次性通知缺口，不可风暴）；② 多源 Edge 推荐登记上行身份（docs/12 §Edge 上传凭证），过渡期可用 `ALERT_EDGE_SOURCE_TOKENS`；③ 飞书/钉钉 200+业务错误码从此判失败，历史"假成功"会转为可重试/终态失败；④ 0011 要求同一 Fingerprint 无历史双活跃行（有则迁移失败，需先人工合并）。
+
+---
+
+## 2026-11-15 · R18：P8-P1-02 NetworkPolicy 真集群验证（rpi-k3s REVISION 3）
+
+- `helm upgrade ap-dev`（本地 chart + values-dev）→ REVISION 3；三条 per-component NP 就地更新：
+  worker 新增公网通知出口（80/443，排除 RFC1918/link-local/CGNAT/IPv6 私网），edge 增
+  `edgeCentralNamespace/Port` 可选跨 ns（dev 未启用）。api/edge Pod 未重启（AGE 不变）。
+- 连通矩阵（worker 标签临时 Pod + 现有 api/edge）：同 ns api 200、DNS 53/FQDN allow；
+  kube-system:9153 / LAN 10.8 / edge→PG / edge→公网 / api→公网全部**立即拒绝**；
+  worker→公网为**策略放行后上游超时**（集群无外网）。区分依据：拒绝=立即 exit 1，放行但不可达=Operation timed out。
+- 证据：`docs/evidence/P8-p1-02-rpi-k3s-2026-11-15.md`（含限制：无公网出口、无镜像导入通道 ——
+  本次未部署 P8 运行时与 0009–0011 迁移，待镜像通道后补集群级验收）。
+- 清理：临时 Pod `p8-nettest-worker` 已删除。
