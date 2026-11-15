@@ -735,3 +735,34 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 
 - 本轮无业务语义变更（除启动期配置校验与 resolver 兜底），不触碰 P8 已验收链路。
 - CI 新增 lint 步骤会在下一次 push 生效；本地与 CI 使用同一 pin 版本，避免版本漂移。
+
+---
+
+## 2026-11-16 · R20：性能回归验证 + 毒消息 DLQ 修复 + 压测/冒烟脚本鉴权修复
+
+### 性能回归（P8 后复跑，本地 100/2000 EPS）
+
+| 阶段 | 结果 |
+| --- | --- |
+| 稳态 100 EPS × 120s | push 240 batches，**0 错误**，P50 14.0ms / **P95 16.3ms** / P99 25.7ms；端到端（push→receipt）n=1958，P50 111ms / **P95 229.9ms** / P99 312.6ms（SLO ≤3s） |
+| 突发 2000 EPS × 60s | push 2400 batches，**0 错误**，P50 8.7ms / P95 20.4ms / P99 31.0ms；单副本消费滞后（P95 50s），与 P6 结论一致（本地单副本 ~450 EPS，生产需多副本） |
+| 不变量 | instances=23750 / transitions=23761 / receipts=29392，零丢失 |
+
+结论：P8 的 authority generation 过滤、发送前续租、advisory lock 未造成可测回退（稳态 e2e P95 仍在 SLO 内一个数量级余量）。
+
+### 发现的真实缺陷（R20 修复）
+
+1. **毒消息打死 worker（P0）**：`ApplyEvent` 的契约校验错误（缺 signal/tenant/transport/severity）是普通 error →
+   consumer 不 DLQ → processor 关键任务 fail-stop → 重启后同一条消息再次崩溃（crash loop）。
+   修复：新增 `domainalert.ErrInvalidEvent` 哨兵，postgres 校验错误 wrap 之；processor 将
+   `ErrInvalidEvent`/`ErrIncompleteIdentity` 归类 Permanent → 隔离进 DLQ 并 commit offset。
+   实测：worker 日志 `quarantining poison message to DLQ`，`alert.dlq.v1` partition 1 offset=1，worker 存活。
+2. **压测/冒烟/回放脚本在 P7 鉴权后失效（P1）**：`loadgen` 无 Bearer、随机租户/来源；`smoke_e2e.sh`/`replay_v02.sh`
+   未注册凭证 → 全部 401。修复：loadgen 增 `-token/-tenant/-source`；脚本 seed `alert_sources`+`source_credentials`
+   并携带 Authorization；补建 `alert.dlq.v1`/`alert.lifecycle.v1` 主题（compose Kafka 关闭自动建主题）。
+
+### 验收
+
+- `scripts/smoke_e2e.sh`：SMOKE PASS（202 → Kafka → worker → PG，trace 贯通，重复批次幂等）。
+- `scripts/replay_v02.sh`：REPLAY PASS（T-005/T-006/T-007：1000 重投单 transition、乱序不回滚、整批重放零重复）。
+- `go test ./...` / `golangci-lint` / `go vet`：全绿、0 issues。

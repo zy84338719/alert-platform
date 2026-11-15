@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/query"
+	domainalert "github.com/example/alert-platform/internal/domain/alert"
 	"github.com/example/alert-platform/internal/infrastructure/testenv"
 )
 
@@ -463,6 +465,22 @@ func itoa(i int) string {
 // 各自生成 Episode ID 插入（(tenant,fingerprint,episode_key) 唯一约束拦不住）。
 // 修复后：事务级 advisory lock 串行化同一身份，活跃 episode 恰好 1 个；
 // 部分唯一索引作为数据库兜底，直接插入第二个活跃行必须被拒绝。
+// R20：契约违例必须携带 domainalert.ErrInvalidEvent 哨兵（processor 据此
+// 归类 Permanent 并进 DLQ），而不是普通 error 打死 worker。
+func TestInvalidEventCarriesSentinel(t *testing.T) {
+	store, _ := newStoreTest(t)
+	ev := canonical("bad-1", time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC))
+	ev.Signal = eventv1.EventSignal_EVENT_SIGNAL_UNSPECIFIED
+	if _, err := store.ApplyEvent(context.Background(), ev); !errors.Is(err, domainalert.ErrInvalidEvent) {
+		t.Fatalf("missing signal err = %v, want ErrInvalidEvent sentinel", err)
+	}
+	ev2 := canonical("bad-2", time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC))
+	ev2.TenantId = ""
+	if _, err := store.ApplyEvent(context.Background(), ev2); !errors.Is(err, domainalert.ErrInvalidEvent) {
+		t.Fatalf("missing tenant err = %v, want ErrInvalidEvent sentinel", err)
+	}
+}
+
 func TestConcurrentFiringSameFingerprintSingleEpisode(t *testing.T) {
 	store, pool := newStoreTest(t)
 	ctx := context.Background()

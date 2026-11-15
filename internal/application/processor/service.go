@@ -12,8 +12,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	domainalert "github.com/example/alert-platform/internal/domain/alert"
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
+	domainalert "github.com/example/alert-platform/internal/domain/alert"
 	"github.com/oekit/logx"
 	"github.com/oekit/tracing/traceid"
 )
@@ -57,7 +57,10 @@ func (s *Service) Handle(ctx context.Context, msg IncomingMessage) error {
 	}
 	duplicate, err := s.store.ApplyEvent(ctx, ev)
 	if err != nil {
-		if errors.Is(err, domainalert.ErrIncompleteIdentity) {
+		// Permanent classes: the payload itself is unusable (contract
+		// violation / incomplete identity) — quarantine into the DLQ and
+		// commit. Everything else (DB down, lock timeout) stays transient.
+		if errors.Is(err, domainalert.ErrIncompleteIdentity) || errors.Is(err, domainalert.ErrInvalidEvent) {
 			return Permanent(fmt.Errorf("apply event %s: %w", ev.GetTransportId(), err))
 		}
 		return fmt.Errorf("apply event %s: %w", ev.GetTransportId(), err)

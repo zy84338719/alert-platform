@@ -103,3 +103,5 @@ P8-009,P8,W22,P1,Backend-Core,2,同 Fingerprint 并发互斥,ApplyEvent advisory
 P8-010,P8,W22,P2,Backend-Integration,1,HUATUO 聚合器内存有界,Prune 定期淘汰+DefaultMaxKeys 配额+Len 水位,过期淘汰/唯一键洪峰有界,P7-004,DONE
 P8-011,P8,W22,P1,Backend-Core,1,重复 Firing 刷新观察时间,receipt 去重路径刷新 last_observed_at（GREATEST+身份锁），零额外通知/历史,持续 firing 观察时间前进且通知=1,P7-001,DONE
 P8-012,P8,W22,P0,QA,5,真实集成发布门槛（DeepFlow/HUATUO/多集群/CH/渠道沙箱）,真实环境 E2E 报告,真实样本与故障演练通过,ARC-002,BLOCKED
+P8-013,P8,W22,P0,Backend-Core,1,毒消息 DLQ 隔离（契约违例不 crash worker）,domainalert.ErrInvalidEvent 哨兵 + processor Permanent 归类；脚本补建 DLQ/lifecycle 主题,缺 signal/tenant 事件进 DLQ 且 worker 存活（smoke+DLQ offset 实测）,P7-010,DONE
+P8-014,P8,W22,P1,QA,1,压测/冒烟/回放脚本鉴权修复,loadgen -token/-tenant/-source；smoke/replay seed 来源凭证并带 Bearer；perf/replay 建主题,smoke/replay/perf 三脚本真实通过（202→消费→断言）,P7-003,DONE

@@ -28,7 +28,20 @@ echo "==> disposable perf database + schema"
 docker exec "$PG_CONTAINER" psql -U postgres -qc "DROP DATABASE IF EXISTS ${DB} WITH (FORCE)" >/dev/null
 docker exec "$PG_CONTAINER" psql -U postgres -qc "CREATE DATABASE ${DB}" >/dev/null
 go run ./cmd/alert-migrate -dsn "$TARGET_DSN" >/dev/null
+# P7-P0-03: /ingest/v1 is credential-gated. Register the perf source and its
+# token so the load generator drives a REAL authorized push path (random
+# unauthenticated identities would 401/403 and void the numbers).
+PERF_TENANT="11112222-0000-0000-0000-000000000001"
+PERF_SOURCE="11112222-0000-0000-0000-0000000000a1"
+PERF_TOKEN="aps_perf_${RUN_ID}"
+docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qc "INSERT INTO alert_sources (tenant_id, source_id, name, source_type, vendor_version, adapter_version, cluster_id, enabled, health_status) VALUES ('$PERF_TENANT','$PERF_SOURCE','perf-loadgen','deepflow','7.2.4','v1','perf',true,'unknown')" >/dev/null
+docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qc "INSERT INTO source_credentials (tenant_id, source_id, token_hash) VALUES ('$PERF_TENANT','$PERF_SOURCE', encode(sha256('$PERF_TOKEN'::bytea),'hex'))" >/dev/null
+echo "==> perf source registered: tenant=$PERF_TENANT source=$PERF_SOURCE"
 docker exec dev-kafka-1 kafka-topics --bootstrap-server localhost:29092 --create --topic "alert.perf.${RUN_ID}" --partitions 3 >/dev/null 2>&1 || true
+# Quarantine + lifecycle targets (compose Kafka has auto-create disabled).
+for t in alert.dlq.v1 alert.lifecycle.v1; do
+  docker exec dev-kafka-1 kafka-topics --bootstrap-server localhost:29092 --create --if-not-exists --topic "$t" --partitions 3 >/dev/null 2>&1 || true
+done
 
 go build -o "$WORK/api" ./cmd/alert-api
 go build -o "$WORK/worker" ./cmd/alert-worker
@@ -43,9 +56,11 @@ ALERT_PG_DSN="$TARGET_DSN" ALERT_KAFKA_BROKERS="$BROKERS" ALERT_KAFKA_TOPIC="ale
 for i in $(seq 1 50); do curl -sf "http://127.0.0.1:18400/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 
 echo "==> steady 100 EPS for 120s"
-"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 100 -d 120s -pg "$TARGET_DSN" | tee "$WORK/steady.txt"
+"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 100 -d 120s -pg "$TARGET_DSN" \
+  -token "$PERF_TOKEN" -tenant "$PERF_TENANT" -source "$PERF_SOURCE" | tee "$WORK/steady.txt"
 echo "==> burst 2000 EPS for 60s (local scale; full 10min on perf cluster)"
-"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 2000 -d 60s -burst -pg "$TARGET_DSN" | tee "$WORK/burst.txt"
+"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 2000 -d 60s -burst -pg "$TARGET_DSN" \
+  -token "$PERF_TOKEN" -tenant "$PERF_TENANT" -source "$PERF_SOURCE" | tee "$WORK/burst.txt"
 
 echo "==> post-run invariants"
 sleep 5

@@ -25,8 +25,27 @@ log "step 1/7: dependencies health (compose)"
 docker compose -f deploy/dev/docker-compose.yaml ps --status running | grep -q postgres || die "dev postgres not running (make dev-deps)"
 docker compose -f deploy/dev/docker-compose.yaml ps --status running | grep -q kafka || die "dev kafka not running (make dev-deps)"
 
+# P7/R20: the consumer quarantines contract-violating events into the DLQ and
+# the relay publishes lifecycle events — both topics must exist locally
+# (compose Kafka has auto-create disabled).
+KAFKA_CONTAINER="${SMOKE_KAFKA_CONTAINER:-dev-kafka-1}"
+for t in alert.events alert.dlq.v1 alert.lifecycle.v1; do
+  docker exec "$KAFKA_CONTAINER" kafka-topics --bootstrap-server localhost:29092 \
+    --create --if-not-exists --topic "$t" --partitions 3 >/dev/null 2>&1 || true
+done
+
 log "step 2/7: migrate"
 GOWORK=off go run ./cmd/alert-migrate -dsn "$PG_DSN" || die "migrate failed"
+
+# P7-P0-03: /ingest/v1 is credential-gated; register the smoke source so the
+# canonical POST exercises the REAL authorized path instead of 401.
+SMOKE_TENANT="11111111-1111-1111-1111-111111111111"
+SMOKE_SRC="22222222-2222-2222-2222-222222222222"
+SMOKE_TOKEN="aps_smoke_$(date +%s)"
+psql "INSERT INTO alert_sources (tenant_id, source_id, name, source_type, vendor_version, adapter_version, cluster_id, enabled, health_status)
+      VALUES ('$SMOKE_TENANT','$SMOKE_SRC','smoke','deepflow','7.2.4','x','c1',true,'unknown') ON CONFLICT DO NOTHING" >/dev/null
+psql "INSERT INTO source_credentials (tenant_id, source_id, token_hash)
+      VALUES ('$SMOKE_TENANT','$SMOKE_SRC', encode(sha256('$SMOKE_TOKEN'::bytea),'hex')) ON CONFLICT DO NOTHING" >/dev/null
 
 bash scripts/dev_up.sh down >/dev/null 2>&1 || true
 for n in alert-api alert-worker alert-edge; do
@@ -48,11 +67,11 @@ done
 log "healthz 200 on api/worker/edge"
 
 log "step 4/7: POST /ingest/v1/events:batch"
-TENANT="11111111-1111-1111-1111-111111111111"
-SRC="22222222-2222-2222-2222-222222222222"
-BODY='{"batch_id":"smoke-batch-1","events":[{"tenant_id":"'$TENANT'","source":{"source_id":"'$SRC'","source_type":1,"external_rule_id":"dp-rule-7"},"resource":{"cluster_id":"c1","resource_type":"pod","resource_uid":"uid-smoke-1"},"severity":1,"alert_name":"smoke-cpu-high","event_key":"smoke-ek-1"}]}'
+TENANT="$SMOKE_TENANT"
+SRC="$SMOKE_SRC"
+BODY='{"batch_id":"smoke-batch-1","events":[{"tenant_id":"'$TENANT'","source":{"source_id":"'$SRC'","source_type":1,"external_rule_id":"dp-rule-7"},"resource":{"cluster_id":"c1","resource_type":"pod","resource_uid":"uid-smoke-1"},"kind":1,"signal":1,"severity":1,"alert_name":"smoke-cpu-high","event_key":"smoke-ek-1"}]}'
 resp="$(curl -s -X POST http://127.0.0.1:8080/ingest/v1/events:batch \
-  -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -d "$BODY")"
+  -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -H "Authorization: Bearer $SMOKE_TOKEN" -d "$BODY")"
 echo "$resp" | grep -q '"durable_batch_id":"smoke-batch-1"' || die "expected 202 envelope with durable_batch_id, got: $resp"
 log "202 accepted (durable_batch_id=smoke-batch-1)"
 
@@ -73,7 +92,7 @@ log "trace_id present in api($api_hits) and worker($worker_hits) logs"
 
 log "step 7/7: duplicate batch retry is transport-idempotent"
 curl -s -X POST http://127.0.0.1:8080/ingest/v1/events:batch \
-  -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -d "$BODY" >/dev/null
+  -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -H "Authorization: Bearer $SMOKE_TOKEN" -d "$BODY" >/dev/null
 sleep 3
 [ "$(psql "SELECT count(*) FROM event_receipts WHERE transport_id='smoke-batch-1:0'")" = "1" ] || die "duplicate batch created extra receipts"
 log "retry kept receipts at 1 (deterministic transport_id)"

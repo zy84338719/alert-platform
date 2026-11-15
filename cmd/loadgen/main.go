@@ -24,7 +24,19 @@ func main() {
 	duration := flag.Duration("d", 60*time.Second, "steady duration")
 	burst := flag.Bool("burst", false, "burst mode: -eps becomes the burst rate")
 	dsn := flag.String("pg", "", "PG DSN to sample end-to-end latency (optional)")
+	// P7-P0-03: the internal ingest surface requires a source credential —
+	// without one every push is 401 and the perf numbers are meaningless.
+	// With -token the generator drives ONE registered tenant/source (the
+	// credential-bound identity); without it the legacy multi-tenant mix is
+	// kept for local drills against an unsecured endpoint.
+	token := flag.String("token", "", "source credential (aps_...) sent as Authorization: Bearer")
+	tenant := flag.String("tenant", "", "tenant_id of the registered source (required with -token)")
+	source := flag.String("source", "", "source_id of the registered source (required with -token)")
 	flag.Parse()
+	if *token != "" && (*tenant == "" || *source == "") {
+		fmt.Fprintln(os.Stderr, "loadgen: -token requires -tenant and -source (credential-bound identity)")
+		os.Exit(2)
+	}
 
 	tenants := []string{
 		"11112222-0000-0000-0000-000000000001",
@@ -34,6 +46,10 @@ func main() {
 	sources := []string{
 		"11112222-0000-0000-0000-0000000000a1",
 		"11112222-0000-0000-0000-0000000000a2",
+	}
+	if *token != "" {
+		tenants = []string{*tenant}
+		sources = []string{*source}
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -95,7 +111,18 @@ func main() {
 					"events":   chunk,
 				})
 				t0 := time.Now()
-				resp, err := client.Post(*api+"/ingest/v1/events:batch", "application/json", bytes.NewReader(body))
+				req, rerr := http.NewRequest(http.MethodPost, *api+"/ingest/v1/events:batch", bytes.NewReader(body))
+				if rerr != nil {
+					mu.Lock()
+					pushErrs++
+					mu.Unlock()
+					return
+				}
+				req.Header.Set("Content-Type", "application/json")
+				if *token != "" {
+					req.Header.Set("Authorization", "Bearer "+*token)
+				}
+				resp, err := client.Do(req)
 				if err != nil || resp.StatusCode != 202 {
 					mu.Lock()
 					pushErrs++

@@ -63,17 +63,20 @@ func (s *Store) ApplyEvent(ctx context.Context, ev *eventv1.AlertEvent) (bool, e
 }
 
 func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOutcome, error) {
+	// Contract violations are Permanent (R20): the processor quarantines them
+	// into the DLQ. Returning plain errors here made a single malformed event
+	// fail-stop the critical processor task and crash-loop on replay.
 	if ev.GetTransportId() == "" {
-		return ApplyOutcome{}, errors.New("canonical event missing transport_id")
+		return ApplyOutcome{}, fmt.Errorf("%w: missing transport_id", domainalert.ErrInvalidEvent)
 	}
 	if ev.GetTenantId() == "" || ev.GetSource() == nil || ev.GetSource().GetSourceId() == "" {
-		return ApplyOutcome{}, errors.New("canonical event missing tenant/source identity")
+		return ApplyOutcome{}, fmt.Errorf("%w: missing tenant/source identity", domainalert.ErrInvalidEvent)
 	}
 	if ev.GetSignal() == eventv1.EventSignal_EVENT_SIGNAL_UNSPECIFIED {
-		return ApplyOutcome{}, errors.New("canonical event missing signal")
+		return ApplyOutcome{}, fmt.Errorf("%w: missing signal", domainalert.ErrInvalidEvent)
 	}
 	if ev.GetSignal() == eventv1.EventSignal_EVENT_SIGNAL_FIRING && ev.GetSeverity() == eventv1.Severity_SEVERITY_UNSPECIFIED {
-		return ApplyOutcome{}, errors.New("firing event missing severity")
+		return ApplyOutcome{}, fmt.Errorf("%w: firing event missing severity", domainalert.ErrInvalidEvent)
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})

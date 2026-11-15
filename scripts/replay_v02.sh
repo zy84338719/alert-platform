@@ -47,6 +47,10 @@ go run ./cmd/alert-migrate -dsn "$TARGET_DSN" >/dev/null
 step "create run topic alert.replay.${RUN_ID}"
 docker exec dev-kafka-1 kafka-topics --bootstrap-server localhost:29092 --create \
   --topic "alert.replay.${RUN_ID}" --partitions 1 >/dev/null
+for t in alert.dlq.v1 alert.lifecycle.v1; do
+  docker exec dev-kafka-1 kafka-topics --bootstrap-server localhost:29092 \
+    --create --if-not-exists --topic "$t" --partitions 3 >/dev/null 2>&1 || true
+done
 
 step "build + start api & worker against ${DB}"
 go build -o "$WORK/api" ./cmd/alert-api
@@ -66,13 +70,17 @@ for i in $(seq 1 50); do
 done
 curl -sf "http://127.0.0.1${API_ADDR}/healthz" >/dev/null || fail "api did not become healthy (see $WORK/api.log)"
 
-step "seed source row"
+step "seed source row + credential (P7-P0-03: /ingest/v1 is credential-gated)"
 psql_q "INSERT INTO alert_sources (tenant_id, source_id, name, source_type, vendor_version, adapter_version, cluster_id)
         VALUES ('${TENANT}','${SOURCE}','replay','deepflow','7.2.3','x','c1') ON CONFLICT DO NOTHING" >/dev/null
+SRC_TOKEN="aps_replay_${RUN_ID}"
+psql_q "INSERT INTO source_credentials (tenant_id, source_id, token_hash)
+        VALUES ('${TENANT}','${SOURCE}', encode(sha256('${SRC_TOKEN}'::bytea),'hex'))" >/dev/null
 
-emit() { # emit <json-file> -> POST canonical batch
+emit() { # emit <json-file> -> POST canonical batch (credential-bound)
   curl -sf -X POST "http://127.0.0.1${API_ADDR}/ingest/v1/events:batch" \
-    -H 'Content-Type: application/json' --data-binary @"$1" >/dev/null
+    -H 'Content-Type: application/json' -H "Authorization: Bearer ${SRC_TOKEN}" \
+    --data-binary @"$1" >/dev/null
 }
 
 step "T-005: 1000 same-source firing redeliveries in one logical episode"
