@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -454,4 +456,66 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// P8-P1-05 失败测试：同一 Fingerprint 的并发 Firing ——
+// 8 个不同 Transport ID 同时进入，ReadCommitted 下双方都可能看不到活跃实例，
+// 各自生成 Episode ID 插入（(tenant,fingerprint,episode_key) 唯一约束拦不住）。
+// 修复后：事务级 advisory lock 串行化同一身份，活跃 episode 恰好 1 个；
+// 部分唯一索引作为数据库兜底，直接插入第二个活跃行必须被拒绝。
+func TestConcurrentFiringSameFingerprintSingleEpisode(t *testing.T) {
+	store, pool := newStoreTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ev := canonical(fmt.Sprintf("race-%d", i), at)
+			if _, err := store.ApplyEvent(ctx, ev); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent apply: %v", err)
+	}
+
+	var active, episodes int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), count(DISTINCT episode_key) FROM alert_instances
+		WHERE monitor_state IN ('pending','firing','stale')`).Scan(&active, &episodes); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 || episodes != 1 {
+		t.Fatalf("active instances=%d episodes=%d, want 1/1 (concurrent firing opened duplicate episodes)", active, episodes)
+	}
+
+	// 数据库兜底：直接插入第二个活跃行（新 episode_key）必须被部分唯一索引拒绝。
+	var fingerprint, tenant, source string
+	if err := pool.QueryRow(ctx, `
+		SELECT fingerprint, tenant_id::text, source_id::text FROM alert_instances LIMIT 1`).
+		Scan(&fingerprint, &tenant, &source); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pool.Exec(ctx, `
+		INSERT INTO alert_instances
+			(id, tenant_id, source_id, fingerprint, episode_key, name, severity,
+			 monitor_state, cluster_id, entity_type, entity_uid, labels,
+			 starts_at, ends_at, last_observed_at, last_transition_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, gen_random_uuid()::text, 'Dup', 'critical',
+		        'firing', 'c1', 'pod', 'pod-1', '{}', now(), NULL, now(), now())`,
+		tenant, source, fingerprint)
+	if err == nil {
+		t.Fatal("second ACTIVE row for the same fingerprint was accepted (partial unique index missing)")
+	}
 }

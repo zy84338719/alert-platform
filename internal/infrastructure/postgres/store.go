@@ -122,6 +122,16 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 	if err != nil {
 		return ApplyOutcome{}, err
 	}
+	// 3b) Serialize the whole identity mutation (P8-P1-05). Two Firing events
+	// with different transport ids can race between "no active instance" and
+	// the insert under ReadCommitted; both would generate their own episode
+	// and the (tenant, fingerprint, episode_key) uniqueness would not fire.
+	// The advisory lock is per (tenant, fingerprint) and released at commit;
+	// the partial unique index (0011) is the database-level backstop.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		ev.GetTenantId()+"|"+fingerprint); err != nil {
+		return ApplyOutcome{}, fmt.Errorf("identity lock: %w", err)
+	}
 
 	// 4) Health-only signals: NO_DATA/INFO update observation freshness but
 	// never change monitor state — NoData must NOT auto-resolve (docs/06 §4,
