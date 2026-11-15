@@ -604,3 +604,61 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 		t.Fatalf("status after owner finish = %q, want 'sent'", status)
 	}
 }
+
+// P8-P1-04（真实 PG）：发送前续租的 fencing ——
+// 一个批次里续租过的任务不会被第二个 Worker 重领（避免慢渠道下重复外发）；
+// 未续租/过期任务可被重领，旧 token 的续租返回 ErrStaleNotifyLease。
+func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	auth := activeAuthority(t, store)
+	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	for _, name := range []string{"RenewA", "RenewB"} {
+		ev := notifyEvent("np-renew-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+		ev.AlertName = name
+		ev.EventKey = "ek-" + name
+		ev.Source.ExternalRuleId = "rule-" + name
+		if _, err := store.ApplyEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Worker A 认领两条（短租约），并像 deliverOne 那样在执行前续租第一条。
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Second, auth.Generation)
+	if err != nil || len(tasks) != 2 {
+		t.Fatalf("claim A: %d tasks err=%v", len(tasks), err)
+	}
+	renewed, expiring := tasks[0], tasks[1]
+	if err := store.RenewNotifyLease(ctx, renewed.ID, renewed.LeaseToken, time.Minute); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	// 模拟第二条租约已过期（不等待）。
+	if _, err := pool.Exec(ctx, `
+		UPDATE notification_outbox SET lease_until = now() - interval '1 second' WHERE id=$1`, expiring.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker B 重领：只能拿到未续租的那条。
+	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	if err != nil || len(again) != 1 || again[0].ID != expiring.ID {
+		t.Fatalf("reclaim = %+v (err=%v), want only the expired task %s", again, err, expiring.ID)
+	}
+
+	// 旧 token 的续租被 fencing（任务已被 B 重领）。
+	if err := store.RenewNotifyLease(ctx, expiring.ID, expiring.LeaseToken, time.Minute); err != notify.ErrStaleNotifyLease {
+		t.Fatalf("stale renew err = %v, want ErrStaleNotifyLease", err)
+	}
+	// 已续租任务仍归 A：B 的再次认领不会包含它。
+	third, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tk := range third {
+		if tk.ID == renewed.ID {
+			t.Fatalf("renewed task %s was re-claimed (double-page risk)", renewed.ID)
+		}
+	}
+}

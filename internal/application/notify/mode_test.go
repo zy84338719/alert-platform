@@ -3,12 +3,14 @@ package notify
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
 
 type modeStore struct {
 	BaseStore
+	mu       sync.Mutex
 	claimed  []Task
 	finished []Finish
 	shadowed []string
@@ -36,8 +38,8 @@ func TestNotifyModes(t *testing.T) {
 	svc, st, sender := newSvc(ModeActive)
 	st.tasks = []Task{{ID: "t1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
 	svc.DeliverOnce(context.Background())
-	if sender.sent != 1 || len(st.finished) != 1 || !st.finished[0].Sent {
-		t.Fatalf("active mode: sender=%d finished=%+v", sender.sent, st.finished)
+	if sender.count() != 1 || len(st.finished) != 1 || !st.finished[0].Sent {
+		t.Fatalf("active mode: sender=%d finished=%+v", sender.count(), st.finished)
 	}
 
 	// SHADOW: recorded to the audit trail, tasks NOT claimed and NOT mutated —
@@ -45,8 +47,8 @@ func TestNotifyModes(t *testing.T) {
 	svc, st, sender = newSvc(ModeShadow)
 	st.tasks = []Task{{ID: "t2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
 	svc.DeliverOnce(context.Background())
-	if sender.sent != 0 {
-		t.Fatalf("shadow mode sent %d notifications (double-send risk!)", sender.sent)
+	if sender.count() != 0 {
+		t.Fatalf("shadow mode sent %d notifications (double-send risk!)", sender.count())
 	}
 	if len(st.finished) != 0 {
 		t.Fatalf("shadow mode mutated delivery state: %+v", st.finished)
@@ -62,18 +64,29 @@ func TestNotifyModes(t *testing.T) {
 	svc, st, sender = newSvc(ModeOff)
 	st.tasks = []Task{{ID: "t3", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
 	svc.DeliverOnce(context.Background())
-	if sender.sent != 0 || len(st.claimed) != 0 || len(st.finished) != 0 {
+	if sender.count() != 0 || len(st.claimed) != 0 || len(st.finished) != 0 {
 		t.Fatalf("off mode: claimed=%d finished=%d", len(st.claimed), len(st.finished))
 	}
 	_ = time.Now
 }
 
-// captureSender counts sends.
-type captureSender struct{ sent int }
+// captureSender counts sends (delivery is concurrent since P8-P1-04).
+type captureSender struct {
+	mu   sync.Mutex
+	sent int
+}
 
 func (c *captureSender) Send(context.Context, string, []byte, []byte) SendResult {
+	c.mu.Lock()
 	c.sent++
+	c.mu.Unlock()
 	return SendResult{Sent: true, HTTPStatus: 200}
+}
+
+func (c *captureSender) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sent
 }
 
 // BaseStore is a minimal in-memory notify.Store for the mode drill. It models
@@ -117,8 +130,14 @@ func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Durati
 
 func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]Task, error) {
 	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease, generation)
+	m.mu.Lock()
 	m.claimed = append(m.claimed, tasks...)
+	m.mu.Unlock()
 	return tasks, err
+}
+
+func (b *BaseStore) RenewNotifyLease(context.Context, string, string, time.Duration) error {
+	return nil
 }
 
 func (m *modeStore) PeekNotifyTasks(_ context.Context, limit int, generation int64) ([]Task, error) {
@@ -135,12 +154,16 @@ func (m *modeStore) PeekNotifyTasks(_ context.Context, limit int, generation int
 }
 
 func (m *modeStore) RecordShadowDelivery(_ context.Context, taskID string) (bool, error) {
+	m.mu.Lock()
 	m.shadowed = append(m.shadowed, taskID)
+	m.mu.Unlock()
 	return true, nil
 }
 
 func (m *modeStore) FinishNotifyTask(_ context.Context, id, _ string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string) error {
+	m.mu.Lock()
 	m.finished = append(m.finished, Finish{ID: id, Sent: sent, Failure: failureCode, AttemptNo: attemptNo})
+	m.mu.Unlock()
 	return nil
 }
 
@@ -161,8 +184,8 @@ func TestShadowToActiveNoHistoryReplay(t *testing.T) {
 	svc.SetMode(ModeShadow)
 	st.tasks = []Task{{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
 	svc.DeliverOnce(ctx) // 首次初始化 → generation 1 (shadow)
-	if sender.sent != 0 || len(st.claimed) != 0 {
-		t.Fatalf("shadow phase: sent=%d claimed=%d", sender.sent, len(st.claimed))
+	if sender.count() != 0 || len(st.claimed) != 0 {
+		t.Fatalf("shadow phase: sent=%d claimed=%d", sender.count(), len(st.claimed))
 	}
 	if st.authMode != ModeShadow || st.authGen != 1 {
 		t.Fatalf("authority after init = %s/%d, want shadow/1", st.authMode, st.authGen)
@@ -180,8 +203,8 @@ func TestShadowToActiveNoHistoryReplay(t *testing.T) {
 	if st.authGen != 2 {
 		t.Fatalf("generation after shadow→active = %d, want 2", st.authGen)
 	}
-	if sender.sent != 1 {
-		t.Fatalf("sent = %d, want 1 (only the fresh task)", sender.sent)
+	if sender.count() != 1 {
+		t.Fatalf("sent = %d, want 1 (only the fresh task)", sender.count())
 	}
 	if len(st.claimed) != 1 || st.claimed[0].ID != "fresh-task" {
 		t.Fatalf("claimed = %v, want [fresh-task] — shadow history must not replay (notification storm)", st.claimed)
@@ -201,8 +224,8 @@ func TestActiveWithoutShadowClaimsAll(t *testing.T) {
 		{ID: "pre-authority", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 0},
 	}
 	svc.DeliverOnce(ctx)
-	if sender.sent != 2 || len(st.claimed) != 2 {
-		t.Fatalf("sent=%d claimed=%d, want 2/2 (gen1 claimed, pre-authority gen0 never)", sender.sent, len(st.claimed))
+	if sender.count() != 2 || len(st.claimed) != 2 {
+		t.Fatalf("sent=%d claimed=%d, want 2/2 (gen1 claimed, pre-authority gen0 never)", sender.count(), len(st.claimed))
 	}
 }
 
@@ -223,8 +246,8 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 		st.tasks = append(st.tasks, Task{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1})
 	}
 	svc1.DeliverOnce(ctx)
-	if sender1.sent != 0 {
-		t.Fatalf("shadow phase sent %d, want 0", sender1.sent)
+	if sender1.count() != 0 {
+		t.Fatalf("shadow phase sent %d, want 0", sender1.count())
 	}
 
 	// 进程 1 停止；运维改 ALERT_NOTIFY_MODE=active 并启动新 Pod。
@@ -233,9 +256,9 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 	svc2.SetMode(ModeActive)
 	svc2.DeliverOnce(ctx)
 
-	if sender2.sent != 0 || len(st.claimed) != 0 {
+	if sender2.count() != 0 || len(st.claimed) != 0 {
 		t.Fatalf("RESTART REPLAY: sent=%d claimed=%d, want 0/0 — shadow history must never be replayed after a Pod restart",
-			sender2.sent, len(st.claimed))
+			sender2.count(), len(st.claimed))
 	}
 	if st.authGen != 2 || st.authMode != ModeActive {
 		t.Fatalf("authority = %s/%d, want active/2", st.authMode, st.authGen)
@@ -244,8 +267,8 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 	// 新 generation（2）的任务正常发送。
 	st.tasks = append(st.tasks, Task{ID: "fresh-after-restart", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 2})
 	svc2.DeliverOnce(ctx)
-	if sender2.sent != 1 {
-		t.Fatalf("fresh task after restart: sent=%d, want 1", sender2.sent)
+	if sender2.count() != 1 {
+		t.Fatalf("fresh task after restart: sent=%d, want 1", sender2.count())
 	}
 }
 
@@ -268,8 +291,8 @@ func TestSilenceCheckFailureDoesNotSend(t *testing.T) {
 	ms.tasks = []Task{{ID: "s1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
 
 	svc.DeliverOnce(context.Background())
-	if sender.sent != 0 {
-		t.Fatalf("silence check failure sent %d notifications, want 0 (fail-closed)", sender.sent)
+	if sender.count() != 0 {
+		t.Fatalf("silence check failure sent %d notifications, want 0 (fail-closed)", sender.count())
 	}
 	if len(ms.finished) != 1 {
 		t.Fatalf("finished = %+v, want one retryable outcome", ms.finished)
@@ -277,5 +300,86 @@ func TestSilenceCheckFailureDoesNotSend(t *testing.T) {
 	f := ms.finished[0]
 	if f.Sent || f.Failure != "retryable" || f.ID != "s1" {
 		t.Fatalf("outcome = %+v, want not-sent retryable for s1", f)
+	}
+}
+
+// staleRenewStore reports that another worker owns the task at renewal time.
+type staleRenewStore struct{ *modeStore }
+
+func (s *staleRenewStore) RenewNotifyLease(context.Context, string, string, time.Duration) error {
+	return ErrStaleNotifyLease
+}
+
+// renewCountingStore counts renewal calls (P8-P1-04).
+type renewCountingStore struct {
+	*modeStore
+	mu     sync.Mutex
+	renews int
+}
+
+func (s *renewCountingStore) RenewNotifyLease(context.Context, string, string, time.Duration) error {
+	s.mu.Lock()
+	s.renews++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *renewCountingStore) renewsCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.renews
+}
+
+// P8-P1-04 失败测试：发送前必须续租 ——
+// ① 每个任务在 Send 之前续租（旧批次串行发送可超出 60s lease，被其他 Worker
+//
+//	重领后重复外发）；② 续租被 fencing（任务已被重领）时绝不发送。
+func TestLeaseRenewalBeforeSend(t *testing.T) {
+	ctx := context.Background()
+	ms := &modeStore{}
+	rc := &renewCountingStore{modeStore: ms}
+	sender := &captureSender{}
+	svc := NewService(rc, sender)
+	ms.tasks = []Task{
+		{ID: "r1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
+		{ID: "r2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
+	}
+	svc.DeliverOnce(ctx)
+	if sender.count() != 2 || rc.renewsCount() != 2 {
+		t.Fatalf("sent=%d renews=%d, want 2/2 (renew per task before send)", sender.count(), rc.renewsCount())
+	}
+
+	// ② 续租已被 fencing：不得发送，也不得覆盖状态。
+	ms2 := &modeStore{}
+	stale := &staleRenewStore{modeStore: ms2}
+	sender2 := &captureSender{}
+	svc2 := NewService(stale, sender2)
+	ms2.tasks = []Task{{ID: "dup", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	svc2.DeliverOnce(ctx)
+	if sender2.count() != 0 {
+		t.Fatalf("stale renewal sent %d notifications, want 0 (double-page guard)", sender2.count())
+	}
+	if len(ms2.finished) != 0 {
+		t.Fatalf("stale renewal finished the task: %+v", ms2.finished)
+	}
+}
+
+// P8-P1-04 单渠道速率上限：2 条同渠道任务至少间隔 1/rate。
+func TestChannelRateLimit(t *testing.T) {
+	ms := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(ms, sender)
+	svc.SetDeliveryTuning(1, 5) // serial + 5 sends/sec
+	ms.tasks = []Task{
+		{ID: "c1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, ChannelID: "ch-1"},
+		{ID: "c2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, ChannelID: "ch-1"},
+	}
+	start := time.Now()
+	svc.DeliverOnce(context.Background())
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond {
+		t.Fatalf("channel pacing not enforced: 2 sends in %s", elapsed)
+	}
+	if sender.count() != 2 {
+		t.Fatalf("sent=%d, want 2", sender.count())
 	}
 }

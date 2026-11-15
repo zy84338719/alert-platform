@@ -902,6 +902,32 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 	return out, tx.Commit(ctx)
 }
 
+// RenewNotifyLease extends the current owner's lease right before a send
+// (P8-P1-04). Conditional on the lease token: a task re-claimed by another
+// worker returns ErrStaleNotifyLease and the caller must skip the send.
+func (s *Store) RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error {
+	var token any
+	if leaseToken != "" {
+		u, perr := uuid.Parse(leaseToken)
+		if perr != nil {
+			return fmt.Errorf("notify renew: invalid lease token %q: %w", leaseToken, perr)
+		}
+		token = u
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET lease_until = now() + ($3::bigint * interval '1 second'), updated_at = now()
+		WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid) AND status='sending'`,
+		id, token, int64(lease.Seconds()))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 && leaseToken != "" {
+		return notify.ErrStaleNotifyLease
+	}
+	return nil
+}
+
 // FinishNotifyTask records the delivery outcome; retryAfter>0 schedules the
 // next attempt (429 Retry-After), otherwise exponential backoff applies.
 // FinishNotifyTask records one attempt outcome, fenced by the claim's lease

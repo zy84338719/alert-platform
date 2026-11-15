@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/oekit/logx"
@@ -63,6 +64,10 @@ type Store interface {
 	// the completion: a stale worker's late result is audited but never
 	// overwrites the current owner's state (ErrStaleNotifyLease).
 	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
+	// RenewNotifyLease extends the current owner's lease before a send
+	// (P8-P1-04); ErrStaleNotifyLease when the task was re-claimed by another
+	// worker — the caller must NOT send (would duplicate a page).
+	RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
 	// PeekNotifyTasks lists pending tasks of the given generation WITHOUT
 	// claiming or mutating them (REL-001 shadow mode: the would-have-sent
@@ -111,13 +116,36 @@ type Service struct {
 	// authorityDirty marks that the desired mode changed and needs another
 	// SyncNotifyAuthority before the next claim.
 	authorityDirty bool
+
+	// P8-P1-04 delivery pacing: bounded parallelism keeps one batch well
+	// inside the lease window, the per-channel limiter protects vendor
+	// quotas, and every send renews its lease right before the HTTP call.
+	concurrency int
+	channelRate float64 // sends/sec per channel; 0 = unlimited
+	rateMu      sync.Mutex
+	channelNext map[string]time.Time
 }
 
 // NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
-// mode active (the persisted authority row remains the source of truth until
-// InitAuthority reconciles it).
+// concurrency 4, mode active (the persisted authority row remains the source
+// of truth until InitAuthority reconciles it).
 func NewService(store Store, sender Sender) *Service {
-	return &Service{store: store, sender: sender, interval: 500 * time.Millisecond, lease: time.Minute, batch: 50, mode: ModeActive, authorityDirty: true}
+	return &Service{
+		store: store, sender: sender,
+		interval: 500 * time.Millisecond, lease: time.Minute, batch: 50,
+		mode: ModeActive, authorityDirty: true,
+		concurrency: 4, channelNext: map[string]time.Time{},
+	}
+}
+
+// SetDeliveryTuning configures batch parallelism and the per-channel send
+// rate (P8-P1-04). concurrency<=0 keeps the default; channelRatePerSec<=0
+// disables channel pacing.
+func (s *Service) SetDeliveryTuning(concurrency int, channelRatePerSec float64) {
+	if concurrency > 0 {
+		s.concurrency = concurrency
+	}
+	s.channelRate = channelRatePerSec
 }
 
 // InitAuthority reconciles the persisted notification ownership with the
@@ -222,10 +250,31 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 		}
 		return 0
 	}
-	for _, t := range tasks {
-		s.deliverOne(ctx, t)
-	}
+	// P8-P1-04: deliver with bounded parallelism. Sequential delivery of a
+	// 50-task batch at 10s timeouts can outlive the 60s lease; parallelism
+	// keeps the batch well inside the window and the per-task lease renewal
+	// in deliverOne covers the rest.
+	s.deliverTasks(ctx, tasks)
 	return len(tasks)
+}
+
+func (s *Service) deliverTasks(ctx context.Context, tasks []Task) {
+	concurrency := s.concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, t := range tasks {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(t Task) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.deliverOne(ctx, t)
+		}(t)
+	}
+	wg.Wait()
 }
 
 // shadowOnce records the would-have-sent trail WITHOUT claiming: tasks stay
@@ -258,6 +307,23 @@ func (s *Service) shadowOnce(ctx context.Context) int {
 }
 
 func (s *Service) deliverOne(ctx context.Context, t Task) {
+	// P8-P1-04: refresh the lease immediately before doing work. A batch of
+	// 50 tasks at 10s channel timeouts can outlive the 60s lease; without
+	// renewal another worker re-claims mid-send and pages twice. If the
+	// renewal is fenced (task already re-claimed), skip — sending now would
+	// duplicate. A DB error also defers: the task stays leased and retries
+	// after expiry rather than risking an unowned send.
+	if err := s.store.RenewNotifyLease(ctx, t.ID, t.LeaseToken, s.lease); err != nil {
+		if errors.Is(err, ErrStaleNotifyLease) {
+			logx.CtxWarn(ctx, "notification lease lost before send; skipping duplicate",
+				"component", "alert-worker", "task", t.ID)
+			return
+		}
+		logx.CtxError(ctx, "notification lease renewal failed; delivery deferred (fail-closed)",
+			logx.ErrKey, err, "task", t.ID)
+		return
+	}
+
 	// Silence re-check at send time (docs/04 §5); the labels travel in the
 	// routing payload snapshot taken at enqueue time.
 	var p struct {
@@ -282,6 +348,12 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 		return
 	}
 
+	// P8-P1-04: per-channel pacing protects vendor quotas. Third-party channels
+	// have no idempotency key — delivery stays at-least-once even with lease
+	// fencing, which is why pacing and renewal reduce (not eliminate) dup risk.
+	if !s.waitChannelSlot(ctx, t.ChannelID) {
+		return
+	}
 	res := s.sender.Send(ctx, t.ChannelType, t.ChannelCfg, t.Payload)
 	if err := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
 		if errors.Is(err, ErrStaleNotifyLease) {
@@ -308,4 +380,32 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 		"component", "alert-worker", "task", t.ID, "channel_type", t.ChannelType,
 		"attempt", t.Attempts, "outcome", outcome, "http_status", res.HTTPStatus,
 		logx.ErrKey, res.Err)
+}
+
+// waitChannelSlot paces sends per channel (P8-P1-04). Returns false when the
+// context ends while waiting. Zero rate = unlimited.
+func (s *Service) waitChannelSlot(ctx context.Context, channelID string) bool {
+	if s.channelRate <= 0 {
+		return true
+	}
+	every := time.Duration(float64(time.Second) / s.channelRate)
+	for {
+		s.rateMu.Lock()
+		now := time.Now()
+		next, seen := s.channelNext[channelID]
+		if !seen || !next.After(now) {
+			s.channelNext[channelID] = now.Add(every)
+			s.rateMu.Unlock()
+			return true
+		}
+		wait := next.Sub(now)
+		s.rateMu.Unlock()
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
 }
