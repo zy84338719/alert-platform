@@ -689,6 +689,13 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - 连通矩阵（worker 标签临时 Pod + 现有 api/edge）：同 ns api 200、DNS 53/FQDN allow；
   kube-system:9153 / LAN 10.8 / edge→PG / edge→公网 / api→公网全部**立即拒绝**；
   worker→公网为**策略放行后上游超时**（集群无外网）。区分依据：拒绝=立即 exit 1，放行但不可达=Operation timed out。
-- 证据：`docs/evidence/P8-p1-02-rpi-k3s-2026-11-15.md`（含限制：无公网出口、无镜像导入通道 ——
-  本次未部署 P8 运行时与 0009–0011 迁移，待镜像通道后补集群级验收）。
-- 清理：临时 Pod `p8-nettest-worker` 已删除。
+- **REVISION 4（完整 P8 部署）**：本机 buildx 构建 arm64 `alert-platform:0.4.0-dev` → 节点导入法
+  （特权 pod + nsenter 宿主 ctr，rpi4-011）→ `helm upgrade` 新镜像：migrate hook `schema version 11`
+  （`schema_migrations=11|f`，0009 notification_authority 种子 active/gen1/initialized=false、
+  0010 edge_uplink_credentials、0011 部分唯一索引齐全），api/edge 旧 pod 滚动至新二进制且 `/healthz`/`/readyz` 200。
+- **集群级 Edge 上行鉴权矩阵**（真实 api + 真实 PG，DBA 预置 tenant/双来源/edge 凭证，测后清理）：
+  无凭证 401；edge token+allowed 来源 500（认证/身份绑定通过，仅因集群无 Kafka）；allowed 集外 403；
+  跨租户 403；未知 token 401。
+- 证据：`docs/evidence/P8-cluster-verification-rpi-k3s-2026-11-15.md`（限制：无公网出口 → worker 通知
+  真实外呼待有外网环境；无 Kafka → 消费链路待接入；P8-012 真实集成仍挂账）。
+- 清理：临时 Pod `p8-nettest-worker`、`image-import` 及测试数据已删除。

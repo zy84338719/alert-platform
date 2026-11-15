@@ -185,7 +185,7 @@
 | P8-P0-03 | 飞书/钉钉业务码校验 | DONE | `64b1042` | 200+业务错误码/限流/空体/非 JSON 矩阵（TestVendorBusinessCodeValidation） |
 | P8-P0-04 | SSRF DNS 绑定 | DONE | `64b1042` | IP 钉扎拨号 + 混合解析拒绝（TestGuardedDialPinsValidatedIP / TestGuardedDialRejectsBlockedRebind） |
 | P8-P1-01 | Readiness 注册时机 | DONE | `f5ae236` | 晚注册 503 / 健康 200（TestLateRuntimeCheckIsObserved） |
-| P8-P1-02 | NetworkPolicy 默认出口 | DONE | `c8bacb5` + `6406785` | chart 矩阵：默认公网放行+私网排除、enabled=false 回退、edgeCentralNamespace 跨 ns；**rpi-k3s REVISION 3 实测矩阵**（allow：同 ns api/DNS；deny：9153/10.8/edge→PG/公网，证据 docs/evidence/P8-p1-02-rpi-k3s-2026-11-15.md） |
+| P8-P1-02 | NetworkPolicy 默认出口 | DONE | `c8bacb5` + `6406785` | chart 矩阵（默认公网放行/私网排除/关闭回退/跨 ns）；**rpi-k3s 实测**：REVISION 3 策略矩阵（allow：同 ns api/DNS；deny：9153/10.8/edge→PG/公网）+ REVISION 4 导入 P8 镜像后迁移 0009–0011 全应用、api/edge 新二进制健康、Edge 上行鉴权 401/500/403/403/401 矩阵 —— 证据 docs/evidence/P8-cluster-verification-rpi-k3s-2026-11-15.md |
 | P8-P1-03 | 静默失败不放行 | DONE | `6b982ee` | DB 错误→retryable 且 sender 未调用（TestSilenceCheckFailureDoesNotSend） |
 | P8-P1-04 | Lease 续租/限速 | DONE | `a1419cd` | PG 续租任务不被重领/旧 token fencing（TestRenewNotifyLeaseProtectsFromReclaim）+ 续租顺序/stale 不发送/限速间隔 |
 | P8-P1-05 | Fingerprint 并发互斥 | DONE | `bef3bf3` | 8 并发 Firing 单活跃 episode + 第二活跃行被部分唯一索引拒绝（TestConcurrentFiringSameFingerprintSingleEpisode） |
