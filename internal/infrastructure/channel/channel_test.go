@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,4 +174,120 @@ func TestBlockedIPRanges(t *testing.T) {
 		}
 	}
 	_ = fmt.Sprint()
+}
+
+// P8-P0-03 失败测试：HTTP 200 ≠ 发送成功 ——
+// 飞书/钉钉业务错误码藏在 200 响应体里；修复前 vendorCheck 是占位实现且
+// body 已被丢弃，{"code":非零} 会被判 sent（平台记录成功、机器人实际拒绝）。
+// 矩阵覆盖：两家成功码、业务拒绝（permanent）、限流码（retryable）、
+// 空体/非 JSON（retryable unverified）、审计信息脱敏截断。
+func TestVendorBusinessCodeValidation(t *testing.T) {
+	sender := NewHTTPSender(true)
+	cases := []struct {
+		name        string
+		channelType string
+		body        string
+		sent        bool
+		failure     string
+	}{
+		{"feishu ok", "feishu", `{"code":0,"msg":"success","data":{}}`, true, ""},
+		{"feishu legacy envelope ok", "feishu", `{"StatusCode":0,"StatusMessage":"success"}`, true, ""},
+		{"feishu business reject", "feishu", `{"code":19021,"msg":"param error"}`, false, "permanent"},
+		{"feishu rate limited", "feishu", `{"code":9499,"msg":"too many request"}`, false, "retryable"},
+		{"dingtalk ok", "dingtalk", `{"errcode":0,"errmsg":"ok"}`, true, ""},
+		{"dingtalk business reject", "dingtalk", `{"errcode":310000,"errmsg":"sign not match"}`, false, "permanent"},
+		{"dingtalk throttled", "dingtalk", `{"errcode":130101,"errmsg":"send too fast"}`, false, "retryable"},
+		{"feishu empty body", "feishu", ``, false, "retryable"},
+		{"dingtalk non-json body", "dingtalk", `<html>proxy error</html>`, false, "retryable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			res := sender.Send(context.Background(), tc.channelType, cfg(srv.URL), payload)
+			if res.Sent != tc.sent || res.FailureCode != tc.failure {
+				t.Fatalf("%s: sent=%v failure=%q err=%q, want sent=%v failure=%q",
+					tc.name, res.Sent, res.FailureCode, res.Err, tc.sent, tc.failure)
+			}
+			if res.HTTPStatus != http.StatusOK {
+				t.Fatalf("%s: HTTPStatus = %d, want 200", tc.name, res.HTTPStatus)
+			}
+		})
+	}
+
+	// 审计信息：业务错误消息截断到 200 字符且不含控制字符。
+	long := strings.Repeat("x", 500) + "\nsecond-line"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":19001,"msg":"` + strings.Repeat("x", 500) + `\nsecond-line"}`))
+	}))
+	defer srv.Close()
+	res := sender.Send(context.Background(), "feishu", cfg(srv.URL), payload)
+	if res.Sent || res.FailureCode != "permanent" {
+		t.Fatalf("long reject: %+v", res)
+	}
+	if strings.ContainsAny(res.Err, "\n\r\t") {
+		t.Fatalf("audit message leaked control characters: %q", res.Err)
+	}
+	if len(res.Err) > 240 {
+		t.Fatalf("audit message not capped: %d chars", len(res.Err))
+	}
+	_ = long
+}
+
+// P8-P0-04 失败测试：DNS Rebinding —— 校验之后必须连接"校验过的 IP 字面量"，
+// 不能在 Dial 时二次解析域名。修复前 guardedDial 先 LookupIPAddr 校验、
+// 再 d.DialContext(ctx, network, addr)（addr 仍是域名）→ 二次解析可返回
+// 内网地址，绕过 T-013 防护。
+func TestGuardedDialPinsValidatedIP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
+			}(c)
+		}
+	}()
+
+	sender := NewHTTPSender(true) // 127.0.0.1 allowed for this drill
+	sender.resolve = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+	// .invalid never resolves publicly: only IP pinning can make this succeed.
+	host := "rebind.invalid"
+	endpoint := fmt.Sprintf("http://%s:%d/hook", host, ln.Addr().(*net.TCPAddr).Port)
+	res := sender.Send(context.Background(), "webhook", cfg(endpoint), payload)
+	if !res.Sent {
+		t.Fatalf("dial did not use the validated IP (re-resolved the hostname): %+v", res)
+	}
+}
+
+// 多 A/AAAA：任一解析结果落在禁区内即整体拒绝（不给 rebinding 留窗口），
+// 且失败被归类为 permanent/ssrf（配置错误，重试无意义）。
+func TestGuardedDialRejectsBlockedRebind(t *testing.T) {
+	sender := NewHTTPSender(false)
+	sender.resolve = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{
+			{IP: net.ParseIP("93.184.216.34")},   // public-looking first answer
+			{IP: net.ParseIP("169.254.169.254")}, // metadata endpoint in the same set
+		}, nil
+	}
+	res := sender.Send(context.Background(), "webhook", cfg("http://metadata.invalid:80/hook"), payload)
+	if res.Sent || res.FailureCode != "ssrf" {
+		t.Fatalf("mixed-resolution rebind must be rejected as ssrf: %+v", res)
+	}
 }

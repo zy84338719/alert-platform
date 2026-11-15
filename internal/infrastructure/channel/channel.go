@@ -43,13 +43,19 @@ type Config struct {
 
 // HTTPSender is the production Sender.
 type HTTPSender struct {
-	Client        *http.Client
-	AllowPrivate  bool // tests/local only; NEVER enable in production configs
+	Client       *http.Client
+	AllowPrivate bool // tests/local only; NEVER enable in production configs
+	// resolve is overridable in tests (DNS rebinding drill); production uses
+	// net.DefaultResolver.LookupIPAddr.
+	resolve func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 // NewHTTPSender builds the sender; allowPrivate flips the SSRF dial guard.
 func NewHTTPSender(allowPrivate bool) *HTTPSender {
 	s := &HTTPSender{AllowPrivate: allowPrivate}
+	s.resolve = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return net.DefaultResolver.LookupIPAddr(ctx, host)
+	}
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	transport := &http.Transport{
 		DialContext: s.guardedDial(dialer),
@@ -58,22 +64,37 @@ func NewHTTPSender(allowPrivate bool) *HTTPSender {
 	return s
 }
 
+// guardedDial resolves and validates the endpoint, then dials the VALIDATED IP
+// literally (P8-P0-04). Dialing the original hostname lets the dialer resolve
+// again — a DNS-rebinding target could answer the check with a public address
+// and the connect with a private one. Pinning the address closes that window.
+// TLS SNI and the HTTP Host header still come from the URL, so certificates
+// and virtual hosting are unaffected.
 func (s *HTTPSender) guardedDial(d *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, _, err := net.SplitHostPort(addr)
+		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("channel dial %q: %w", addr, err)
 		}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := s.resolve(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("channel resolve %q: %w", host, err)
 		}
+		// EVERY resolved address must pass the guard (multi-A/AAAA answers),
+		// and the connect uses the first validated one — never the hostname.
+		var chosen net.IP
 		for _, ip := range ips {
 			if !s.AllowPrivate && blockedIP(ip.IP) {
 				return nil, fmt.Errorf("channel endpoint %q resolves to forbidden address %s (SSRF guard, T-013)", host, ip.IP)
 			}
+			if chosen == nil {
+				chosen = ip.IP
+			}
 		}
-		return d.DialContext(ctx, network, addr)
+		if chosen == nil {
+			return nil, fmt.Errorf("channel resolve %q: no addresses", host)
+		}
+		return d.DialContext(ctx, network, net.JoinHostPort(chosen.String(), port))
 	}
 }
 
@@ -126,13 +147,13 @@ func (s *HTTPSender) Send(ctx context.Context, channelType string, cfg []byte, p
 		return SendResult{FailureCode: "retryable", Err: err.Error()}
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	// The body must survive until vendor validation (P8-P0-03): a 2xx alone
+	// does NOT mean the bot accepted the message.
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
 	res := classify(resp)
 	if channelType == "feishu" || channelType == "dingtalk" {
-		// Vendor envelopes return 200 with an inner error code; those are
-		// permanent rejections (bad token/args) surfaced as failures.
-		res = vendorCheck(channelType, res)
+		res = vendorCheck(channelType, res, respBody)
 	}
 	return res
 }
@@ -161,12 +182,110 @@ func classify(resp *http.Response) SendResult {
 	}
 }
 
-// vendorCheck inspects feishu/dingtalk response bodies for inner error codes.
-func vendorCheck(channelType string, res SendResult) SendResult {
-	// classify() already drained the body; vendorCheck is a placeholder hook
-	// documented as such: the body-level codes are validated in the tests via
-	// the SendResponse of the mock server envelopes (code==0 == success).
+// vendorBody is the union of feishu/dingtalk envelope fields.
+type vendorBody struct {
+	Code          *int   `json:"code"`
+	Msg           string `json:"msg"`
+	StatusCode    *int   `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+	ErrCode       *int   `json:"errcode"`
+	ErrMsg        string `json:"errmsg"`
+}
+
+// vendorCheck validates the vendor envelope of a 2xx feishu/dingtalk response
+// (P8-P0-03). Both vendors answer HTTP 200 even when the bot rejects the
+// message; the business code inside the body is the real outcome:
+//
+//	feishu   {"code":0,"msg":"success"}            (legacy: {"StatusCode":0,...})
+//	dingtalk {"errcode":0,"errmsg":"ok"}
+//
+// Non-zero business codes are failures: rate-limit codes stay retryable, every
+// other code (bad token/signature/args) is permanent. A 2xx with an
+// unparseable/empty body cannot prove acceptance — it is surfaced as a
+// retryable "unverified" failure instead of a silent success.
+func vendorCheck(channelType string, res SendResult, body []byte) SendResult {
+	if !res.Sent {
+		return res // HTTP-level failure already classified
+	}
+	var env vendorBody
+	if err := json.Unmarshal(body, &env); err != nil {
+		res.Sent = false
+		res.FailureCode = "retryable"
+		res.Err = "vendor response unparseable: " + sanitizeVendorMsg(string(body))
+		return res
+	}
+
+	code, msg, ok := vendorEnvelope(channelType, &env)
+	if !ok {
+		res.Sent = false
+		res.FailureCode = "retryable"
+		res.Err = channelType + " response carries no business code: " + sanitizeVendorMsg(string(body))
+		return res
+	}
+	if code == 0 {
+		return res
+	}
+	res.Sent = false
+	if vendorRetryableCode(channelType, code) {
+		res.FailureCode = "retryable"
+	} else {
+		res.FailureCode = "permanent"
+	}
+	res.Err = fmt.Sprintf("%s rejected: code=%d msg=%s", channelType, code, sanitizeVendorMsg(msg))
 	return res
+}
+
+// vendorEnvelope extracts the business code from the vendor-specific shape.
+func vendorEnvelope(channelType string, env *vendorBody) (code int, msg string, ok bool) {
+	switch channelType {
+	case "feishu":
+		if env.Code != nil {
+			return *env.Code, env.Msg, true
+		}
+		if env.StatusCode != nil { // legacy feishu envelope
+			return *env.StatusCode, env.StatusMessage, true
+		}
+		return 0, "", false
+	case "dingtalk":
+		if env.ErrCode != nil {
+			return *env.ErrCode, env.ErrMsg, true
+		}
+		if env.Code != nil {
+			return *env.Code, env.Msg, true
+		}
+		return 0, "", false
+	}
+	return 0, "", false
+}
+
+// vendorRetryableCode lists the vendor business codes that signal throttling
+// rather than a rejected message; everything else non-zero is permanent.
+func vendorRetryableCode(channelType string, code int) bool {
+	switch channelType {
+	case "dingtalk":
+		return code == 130101 // "send too fast" rate limit
+	case "feishu":
+		return code == 9499 || code == 99991400 // frequency limit
+	}
+	return false
+}
+
+// sanitizeVendorMsg keeps the audit trail useful without leaking payloads:
+// control characters stripped, length capped.
+func sanitizeVendorMsg(msg string) string {
+	msg = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if r < 0x20 {
+			return -1
+		}
+		return r
+	}, msg)
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 // buildPayload renders the typed request body from the routing payload.
