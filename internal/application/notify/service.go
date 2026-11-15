@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oekit/logx"
@@ -23,8 +24,11 @@ type Task struct {
 	ChannelCfg  []byte
 	Payload     []byte
 	Attempts    int
-	CreatedAt   time.Time // enqueue time (P0-07 shadow-history cutoff)
+	CreatedAt   time.Time // enqueue time (shadow-era diagnostics)
 	LeaseToken  string    // P1-02 fencing token minted by the claim; empty = legacy
+	// AuthorityGeneration (P8-P0-01) is the ownership era the task was
+	// enqueued in; only the current era is claimable.
+	AuthorityGeneration int64
 }
 
 // ErrStaleNotifyLease marks a finish attempt from a worker that no longer
@@ -32,21 +36,38 @@ type Task struct {
 // the current owner's state is untouched.
 var ErrStaleNotifyLease = errors.New("notify: stale lease — task was re-claimed; result audited only")
 
+// Authority is the persisted notification-ownership state (P8-P0-01).
+// Mode mirrors ALERT_NOTIFY_MODE; Generation is the ownership era: every mode
+// change opens a new generation, and tasks are only ever claimed within the
+// generation they were enqueued in. This survives process restarts — the
+// shadow→active cutoff cannot live in memory because Kubernetes switches
+// authority by changing env and rolling the Pod.
+type Authority struct {
+	Mode        string
+	Generation  int64
+	EffectiveAt time.Time
+}
+
 // Store is the notification persistence port (infrastructure/postgres).
 type Store interface {
-	// ClaimNotifyTasks claims due tasks; createdAfter (P0-07) excludes tasks
-	// enqueued before the notification-ownership moment — the shadow→active
-	// switch must never auto-replay shadow-era history. Zero time = no cutoff.
-	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]Task, error)
+	// SyncNotifyAuthority reconciles the persisted ownership state with the
+	// configured desired mode: same mode = no-op; different mode (or the first
+	// initialization after the authority ledger was introduced) = new
+	// generation, effective now. Returns the authoritative state.
+	SyncNotifyAuthority(ctx context.Context, desiredMode string) (Authority, error)
+	// ClaimNotifyTasks claims due tasks of the given authority generation;
+	// pre-authority (generation 0) and older-generation tasks are never
+	// claimed — the shadow→active switch must not auto-replay history.
+	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]Task, error)
 	// FinishNotifyTask records one attempt outcome. leaseToken (P1-02) fences
 	// the completion: a stale worker's late result is audited but never
 	// overwrites the current owner's state (ErrStaleNotifyLease).
 	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
-	// PeekNotifyTasks lists pending tasks WITHOUT claiming or mutating them
-	// (REL-001 shadow mode: the would-have-sent trail must not disturb the
-	// delivery queue state machine).
-	PeekNotifyTasks(ctx context.Context, limit int) ([]Task, error)
+	// PeekNotifyTasks lists pending tasks of the given generation WITHOUT
+	// claiming or mutating them (REL-001 shadow mode: the would-have-sent
+	// trail must not disturb the delivery queue state machine).
+	PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]Task, error)
 	// RecordShadowDelivery writes one audited would-have-sent record; the
 	// same task is only recorded once (idempotent per task).
 	RecordShadowDelivery(ctx context.Context, taskID string) (bool, error)
@@ -83,29 +104,64 @@ type Service struct {
 	lease    time.Duration
 	batch    int
 	mode     string
-	// shadowCutoff (P0-07): the moment notification ownership last returned to
-	// active from shadow. Tasks enqueued before it are shadow-era observations
-	// and are never auto-claimed; zero = ownership never switched (claim all).
-	shadowCutoff time.Time
+	// generation (P8-P0-01) is the persisted ownership era this worker is
+	// allowed to deliver in; tasks enqueued in older eras are shadow-era
+	// observations and must never be auto-replayed, across process restarts.
+	generation int64
+	// authorityDirty marks that the desired mode changed and needs another
+	// SyncNotifyAuthority before the next claim.
+	authorityDirty bool
 }
 
 // NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
-// mode active.
+// mode active (the persisted authority row remains the source of truth until
+// InitAuthority reconciles it).
 func NewService(store Store, sender Sender) *Service {
-	return &Service{store: store, sender: sender, interval: 500 * time.Millisecond, lease: time.Minute, batch: 50, mode: ModeActive}
+	return &Service{store: store, sender: sender, interval: 500 * time.Millisecond, lease: time.Minute, batch: 50, mode: ModeActive, authorityDirty: true}
+}
+
+// InitAuthority reconciles the persisted notification ownership with the
+// configured mode and records the authoritative generation (P8-P0-01). Call it
+// once at startup, BEFORE any producer enqueues tasks and before Run.
+func (s *Service) InitAuthority(ctx context.Context) error {
+	a, err := s.store.SyncNotifyAuthority(ctx, s.mode)
+	if err != nil {
+		return err
+	}
+	s.generation = a.Generation
+	s.mode = a.Mode
+	s.authorityDirty = false
+	logx.CtxInfo(ctx, "notification authority", "component", "alert-worker",
+		"mode", s.mode, "generation", s.generation)
+	return nil
+}
+
+// ensureAuthority lazily syncs the authority before a claim (defensive: Run
+// and InitAuthority normally did it already; SetMode marks it dirty).
+func (s *Service) ensureAuthority(ctx context.Context) bool {
+	if !s.authorityDirty && s.generation > 0 {
+		return true
+	}
+	if err := s.InitAuthority(ctx); err != nil {
+		if ctx.Err() == nil {
+			logx.CtxError(ctx, "notification authority sync failed", logx.ErrKey, err)
+		}
+		return false
+	}
+	return true
 }
 
 // SetMode switches delivery authority (REL-001): shadow keeps an auditable
-// record of what WOULD have been sent, active pages for real. P0-07: leaving
-// shadow for active moves the ownership cutoff forward — shadow-era pending
-// tasks are historical observations, NOT a delivery backlog; auto-replaying
-// them would storm every channel the upstream already notified (or the
-// platform only observed). Fresh transitions after the switch deliver.
+// record of what WOULD have been sent, active pages for real. P8-P0-01: the
+// switch is persisted as a new authority generation (SyncNotifyAuthority on
+// the next tick), so historical pending tasks of earlier generations stay
+// observations even after a full worker restart — auto-replaying them would
+// storm every channel the upstream already notified.
 func (s *Service) SetMode(mode string) {
 	switch mode {
 	case ModeActive, ModeShadow, ModeOff:
-		if mode == ModeActive && s.mode == ModeShadow {
-			s.shadowCutoff = time.Now()
+		if mode != s.mode {
+			s.authorityDirty = true
 		}
 		s.mode = mode
 	}
@@ -124,8 +180,13 @@ func (s *Service) SetTuning(interval, lease time.Duration, batch int) {
 	}
 }
 
-// Run delivers until ctx is done.
+// Run delivers until ctx is done. The authority sync happens up front: a
+// worker that cannot establish which generation owns delivery must not start
+// sending (fail-stop — the notifier is a critical supervised task).
 func (s *Service) Run(ctx context.Context) error {
+	if err := s.InitAuthority(ctx); err != nil {
+		return fmt.Errorf("notify: notification authority unavailable: %w", err)
+	}
 	logx.CtxInfo(ctx, "notification worker started", "interval", s.interval.String())
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -145,13 +206,16 @@ func (s *Service) DeliverOnce(ctx context.Context) int {
 }
 
 func (s *Service) deliverBatch(ctx context.Context) int {
+	if !s.ensureAuthority(ctx) {
+		return 0
+	}
 	if s.mode == ModeOff {
 		return 0
 	}
 	if s.mode == ModeShadow {
 		return s.shadowOnce(ctx)
 	}
-	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease, s.shadowCutoff)
+	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease, s.generation)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "notify claim failed", logx.ErrKey, err)
@@ -168,7 +232,7 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 // pending and untouched, so a later switch to active delivers them exactly
 // once through the normal path (REL-001 无双发/不丢不重发).
 func (s *Service) shadowOnce(ctx context.Context) int {
-	tasks, err := s.store.PeekNotifyTasks(ctx, s.batch)
+	tasks, err := s.store.PeekNotifyTasks(ctx, s.batch, s.generation)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "shadow peek failed", logx.ErrKey, err)

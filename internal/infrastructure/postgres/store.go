@@ -769,8 +769,9 @@ func (s *Store) enqueueNotifications(ctx context.Context, tx pgx.Tx, ev *eventv1
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO notification_outbox
 				(id, tenant_id, subject_type, alert_instance_id, idempotency_key,
-				 channel_id, receiver_id, policy_version, payload, status)
-			VALUES ($1,$2,'alert_instance',$3,$4,$5,$6,$7,$8,$9)
+				 channel_id, receiver_id, policy_version, payload, status, authority_generation)
+			VALUES ($1,$2,'alert_instance',$3,$4,$5,$6,$7,$8,$9,
+			        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0))
 			ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
 			uuid.NewString(), ev.GetTenantId(), instanceID, key,
 			rcv.ChannelID, rcv.ReceiverID, dec.PolicyVersion, payload, status); err != nil {
@@ -785,12 +786,77 @@ func (s *Store) enqueueNotifications(ctx context.Context, tx pgx.Tx, ev *eventv1
 // NotifyTask is one claimed notification_outbox row (application type).
 type NotifyTask = notify.Task
 
+// SyncNotifyAuthority reconciles the persisted notification-ownership state
+// with the worker's configured mode (P8-P0-01). Semantics:
+//   - same mode, already initialized: no-op (safe for every worker replica);
+//   - mode changed: generation+1, effective now;
+//   - first initialization after the 0009 migration (initialized=false): ALWAYS
+//     opens a new generation and never adopts pre-authority tasks. The old
+//     process kept its mode only in memory, so the DB cannot know whether those
+//     pending rows are active-era deliveries or shadow-era observations; the
+//     conservative choice is no replay (a one-off notification gap for a
+//     backlog that normally drains in <1s beats a channel-wide storm).
+func (s *Store) SyncNotifyAuthority(ctx context.Context, desiredMode string) (notify.Authority, error) {
+	switch desiredMode {
+	case notify.ModeActive, notify.ModeShadow, notify.ModeOff:
+	default:
+		return notify.Authority{}, fmt.Errorf("notify authority: invalid mode %q", desiredMode)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return notify.Authority{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var a notify.Authority
+	var initialized bool
+	err = tx.QueryRow(ctx, `
+		SELECT mode, generation, effective_at, initialized
+		FROM notification_authority WHERE id=1 FOR UPDATE`).
+		Scan(&a.Mode, &a.Generation, &a.EffectiveAt, &initialized)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Ledger row missing (manual tampering): treat exactly like the
+		// migration seed — insert uninitialized, then take the init path below.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO notification_authority (id, mode, generation, initialized)
+			VALUES (1, 'active', 1, false) ON CONFLICT (id) DO NOTHING`); err != nil {
+			return notify.Authority{}, err
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT mode, generation, effective_at, initialized
+			FROM notification_authority WHERE id=1 FOR UPDATE`).
+			Scan(&a.Mode, &a.Generation, &a.EffectiveAt, &initialized); err != nil {
+			return notify.Authority{}, err
+		}
+	case err != nil:
+		return notify.Authority{}, err
+	}
+
+	if a.Mode != desiredMode || !initialized {
+		a.Generation++
+		if err := tx.QueryRow(ctx, `
+			UPDATE notification_authority
+			SET mode=$1, generation=$2, initialized=true, effective_at=now(), updated_at=now()
+			WHERE id=1
+			RETURNING mode, generation, effective_at`,
+			desiredMode, a.Generation).Scan(&a.Mode, &a.Generation, &a.EffectiveAt); err != nil {
+			return notify.Authority{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return notify.Authority{}, err
+	}
+	return a, nil
+}
+
 // ClaimNotifyTasks claims pending/retrying tasks with FOR UPDATE SKIP LOCKED
 // plus a lease; expired leases (crashed senders) are re-claimed and their
 // attempts counter keeps climbing — at-least-once with an audit trail.
-// createdAfter (P0-07) excludes shadow-era tasks enqueued before the
-// notification-ownership moment (zero time = no cutoff).
-func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, createdAfter time.Time) ([]notify.Task, error) {
+// generation (P8-P0-01) scopes the claim to the current ownership era: tasks
+// enqueued before the authority ledger (generation 0) or in an earlier era
+// are never claimed, so a shadow→active switch cannot replay history.
+func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]notify.Task, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, err
@@ -803,7 +869,7 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 			WHERE ((o.status IN ('pending','retry_scheduled') AND o.next_attempt_at <= now()
 			        AND (o.lease_until IS NULL OR o.lease_until < now()))
 			    OR (o.status = 'sending' AND o.lease_until < now()))
-			  AND ($4::timestamptz IS NULL OR o.created_at > $4)
+			  AND o.authority_generation = $4
 			ORDER BY o.next_attempt_at
 			LIMIT $1
 			FOR UPDATE OF o SKIP LOCKED
@@ -813,17 +879,17 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 		    lease_token=gen_random_uuid(), updated_at=now()
 		FROM claimed WHERE o.id = claimed.id
 		RETURNING o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
-			o.created_at, o.lease_token::text,
+			o.created_at, o.lease_token::text, o.authority_generation,
 			(SELECT type FROM notification_channels c WHERE c.id = o.channel_id),
 			(SELECT config FROM notification_channels c WHERE c.id = o.channel_id)`,
-		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())), nullTime(createdAfter))
+		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())), generation)
 	if err != nil {
 		return nil, err
 	}
 	var out []notify.Task
 	for rows.Next() {
 		var t notify.Task
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.LeaseToken, &t.ChannelType, &t.ChannelCfg); err != nil {
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.LeaseToken, &t.AuthorityGeneration, &t.ChannelType, &t.ChannelCfg); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1237,8 +1303,9 @@ func (s *Store) RecordEscalation(ctx context.Context, cand escalation.Escalation
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO notification_outbox
 			(id, tenant_id, subject_type, incident_id, idempotency_key, channel_id,
-			 receiver_id, policy_version, payload, status)
-		VALUES ($1,$2,'incident',$3,$4,$5,'oncall',$6,$7,'pending')
+			 receiver_id, policy_version, payload, status, authority_generation)
+		VALUES ($1,$2,'incident',$3,$4,$5,'oncall',$6,$7,'pending',
+		        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0))
 		ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
 		uuid.NewString(), cand.TenantID, cand.IncidentID, key, channelID,
 		policyVersion, payload); err != nil {
@@ -1300,15 +1367,17 @@ func (s *Store) CorrelateOnce(ctx context.Context) (int, error) {
 	return merged, nil
 }
 
-// PeekNotifyTasks lists pending tasks without claiming (notify shadow mode).
-func (s *Store) PeekNotifyTasks(ctx context.Context, limit int) ([]notify.Task, error) {
+// PeekNotifyTasks lists pending tasks of the current authority generation
+// without claiming (notify shadow mode).
+func (s *Store) PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]notify.Task, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
 		       c.type, c.config
 		FROM notification_outbox o
 		JOIN notification_channels c ON c.id = o.channel_id AND c.enabled
 		WHERE o.status = 'pending' AND o.next_attempt_at <= now()
-		ORDER BY o.next_attempt_at LIMIT $1`, limit)
+		  AND o.authority_generation = $2
+		ORDER BY o.next_attempt_at LIMIT $1`, limit, generation)
 	if err != nil {
 		return nil, err
 	}
