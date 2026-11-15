@@ -271,7 +271,7 @@ func TestUploaderRateCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	start := time.Now()
-	go u.Run(ctx)
+	go func() { _ = u.Run(ctx) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if p, _ := w.Pending(); len(p) == 0 {
@@ -364,4 +364,19 @@ func TestUploaderUplinkCredentialSelection(t *testing.T) {
 		}
 	}
 	mu.Unlock()
+}
+
+// P8 自审加固：edge 上行身份是 (UplinkToken, EdgeID) 成对配置 ——
+// 只配一个会让中央走错鉴权路径（X-Edge-Id 决定路径），必须在启动期失败，
+// 而不是让每条上传 401。
+func TestUploaderRejectsHalfUplinkIdentity(t *testing.T) {
+	if _, err := NewUploader(&memWAL{}, UploaderConfig{Endpoint: "http://x", UplinkToken: "aps_t"}); err == nil {
+		t.Fatal("token without edge id must be rejected at construction")
+	}
+	if _, err := NewUploader(&memWAL{}, UploaderConfig{Endpoint: "http://x", EdgeID: "edge-1"}); err == nil {
+		t.Fatal("edge id without token must be rejected at construction")
+	}
+	if _, err := NewUploader(&memWAL{}, UploaderConfig{Endpoint: "http://x", UplinkToken: "aps_t", EdgeID: "edge-1"}); err != nil {
+		t.Fatalf("paired uplink identity rejected: %v", err)
+	}
 }

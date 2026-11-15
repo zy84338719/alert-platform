@@ -45,7 +45,7 @@ func main() {
 
 	// Durable producer: Publish returns only after acks=all (docs/04 §2).
 	producer := kafka.NewProducer(strings.Split(cfg.KafkaBrokers, ","), cfg.KafkaTopic)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	httpv1.SetIngest(ingest.NewService(producer))
 
 	// Source registry (ING-003): pgxpool connects lazily; a down PG fails the

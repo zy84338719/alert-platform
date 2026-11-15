@@ -13,9 +13,9 @@ func TestRBACMatrix(t *testing.T) {
 			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermAuditRead: true},
 		RoleMaintainer: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: true, PermSourcesWrite: true,
 			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermAuditRead: false},
-		RoleSRE:     {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
+		RoleSRE: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
 			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: false, PermNotificationsRead: true, PermAuditRead: true},
-		RoleOncall:  {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
+		RoleOncall: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
 			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: true, PermAuditRead: false},
 		RoleAuditor: {PermAlertsRead: true, PermAlertsAck: false, PermSourcesRead: false, PermSourcesWrite: false,
 			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: false, PermAuditRead: true},
@@ -34,8 +34,12 @@ func TestRBACMatrix(t *testing.T) {
 }
 
 func TestTokenHashDeterministicAndSalted(t *testing.T) {
-	if TokenHash("abc") != TokenHash("abc") {
+	h1 := TokenHash("abc")
+	if h1 != TokenHash("abc") {
 		t.Fatal("hash not deterministic")
+	}
+	if len(h1) != 64 {
+		t.Fatalf("SHA-256 hex length = %d, want 64", len(h1))
 	}
 	if TokenHash("abc") == TokenHash("abd") {
 		t.Fatal("hash collision on distinct tokens")

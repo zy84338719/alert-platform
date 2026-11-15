@@ -27,7 +27,7 @@ const (
 
 // deepFlowLevel is one row of the docs/06 §4 mapping table.
 type deepFlowLevel struct {
-	signal  eventv1.EventSignal
+	signal   eventv1.EventSignal
 	severity eventv1.Severity
 }
 
@@ -54,23 +54,23 @@ var deepFlowLevels = map[string]deepFlowLevel{
 // beyond this struct are preserved verbatim in raw_payload. event_level /
 // event_state accept BOTH spellings (bridge string, official numeric enum).
 type deepFlowBridge struct {
-	SchemaVersion    string            `json:"schema_version"`
-	SourceID         string            `json:"source_id"`
-	SourceVersion    string            `json:"source_version"`
-	ExternalEventID  string            `json:"external_event_id"`
-	EventState       any               `json:"event_state"`
-	PolicyID         string            `json:"policy_id"`
-	EventLevel       any               `json:"event_level"`
-	EventKind        string            `json:"event_kind"`
-	AlertName        string            `json:"alert_name"`
-	OccurredAt       string            `json:"occurred_at"`
-	StartsAt         string            `json:"starts_at"`
-	EndsAt           string            `json:"ends_at"`
-	TargetKey        string            `json:"target_key"`
-	ClusterID        string            `json:"cluster_id"`
-	EntityType       string            `json:"entity_type"`
-	Labels           map[string]string `json:"labels"`
-	DetailsURL       string            `json:"details_url"`
+	SchemaVersion   string            `json:"schema_version"`
+	SourceID        string            `json:"source_id"`
+	SourceVersion   string            `json:"source_version"`
+	ExternalEventID string            `json:"external_event_id"`
+	EventState      any               `json:"event_state"`
+	PolicyID        string            `json:"policy_id"`
+	EventLevel      any               `json:"event_level"`
+	EventKind       string            `json:"event_kind"`
+	AlertName       string            `json:"alert_name"`
+	OccurredAt      string            `json:"occurred_at"`
+	StartsAt        string            `json:"starts_at"`
+	EndsAt          string            `json:"ends_at"`
+	TargetKey       string            `json:"target_key"`
+	ClusterID       string            `json:"cluster_id"`
+	EntityType      string            `json:"entity_type"`
+	Labels          map[string]string `json:"labels"`
+	DetailsURL      string            `json:"details_url"`
 	// TenantClaim exists to PROVE the override: any tenant field in a vendor
 	// payload is decoded but always replaced by the credential-derived tenant.
 	TenantClaim string `json:"tenant_id"`
@@ -205,16 +205,16 @@ func deepFlowOne(tenantID, sourceID, clusterFallback string, raw json.RawMessage
 			ResourceType: entityType,
 			ResourceUid:  b.TargetKey,
 		},
-		Kind:          kind,
-		Signal:        signal,
-		Severity:      level.severity,
-		AlertName:     b.AlertName,
-		Labels:        labels,
-		OccurredAt:    timestamppb.New(occurredAt),
-		EventKey:      b.ExternalEventID,
-		RawPayload:    fullBody,
+		Kind:           kind,
+		Signal:         signal,
+		Severity:       level.severity,
+		AlertName:      b.AlertName,
+		Labels:         labels,
+		OccurredAt:     timestamppb.New(occurredAt),
+		EventKey:       b.ExternalEventID,
+		RawPayload:     fullBody,
 		AdapterVersion: DeepFlowAdapterVer,
-		SourceUrl:     b.DetailsURL,
+		SourceUrl:      b.DetailsURL,
 	}
 	if ev.EventKey == "" {
 		// Fallback per mapping.yaml: stable only if the source repeats the
@@ -251,7 +251,7 @@ func sanitizeLabels(in map[string]string) (map[string]string, error) {
 	}
 	for k, v := range in {
 		if len(k) > 128 {
-			return nil, fmt.Errorf("label key too long: %.32s...", k)
+			return nil, fmt.Errorf("label key too long (truncated to 32 chars): %.32s", k)
 		}
 		if len(v) > 512 {
 			return nil, fmt.Errorf("label value too long for key %q", k)

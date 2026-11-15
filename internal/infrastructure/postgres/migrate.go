@@ -36,7 +36,7 @@ func Up(databaseURL, migrationsDir string) (uint, error) {
 	if err != nil {
 		return 0, fmt.Errorf("migrate init: %w", err)
 	}
-	defer m.Close()
+	defer func() { _, _ = m.Close() }()
 
 	upErr := m.Up()
 	version, _, verErr := m.Version()

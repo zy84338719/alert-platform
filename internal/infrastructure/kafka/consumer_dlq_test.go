@@ -33,11 +33,11 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 	waitForMessages(t, brokers, topic, 2)
 
 	consumer := NewConsumer(brokers, topic, "dlq-test-group", dlqTopic)
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 
 	// Run returns on cancellation; the handler cancels once both messages
 	// have been seen, so Run's error is the graceful nil.
@@ -77,8 +77,10 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 
 	// DLQ holds exactly the poison message with the failure header attached.
 	dlqReader := kafka.NewReader(kafka.ReaderConfig{Brokers: brokers, Topic: dlqTopic, Partition: 0, MaxWait: 200 * time.Millisecond})
-	defer dlqReader.Close()
-	dlqReader.SetOffset(kafka.FirstOffset)
+	defer func() { _ = dlqReader.Close() }()
+	if err := dlqReader.SetOffset(kafka.FirstOffset); err != nil {
+		t.Fatal(err)
+	}
 	msg, err := dlqReader.ReadMessage(ctx)
 	if err != nil {
 		t.Fatalf("read dlq: %v", err)
@@ -151,13 +153,13 @@ func TestConsumerTransientFailStop(t *testing.T) {
 	if err := w.WriteMessages(ctx, kafka.Message{Key: []byte("k"), Value: mustProtoEvent(t, "tp-fail-1")}); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	consumer := NewConsumer(brokers, topic, "failstop-group", "")
 	// Shrink the retry envelope so the test stays fast.
 	consumer.retries = 1
 	consumer.backoff = 10 * time.Millisecond
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 
 	attempts := 0
 	err := consumer.Run(ctx, func(context.Context, processor.IncomingMessage) error {
@@ -178,7 +180,7 @@ func createTopic(t *testing.T, brokers []string, name string) {
 	if err != nil {
 		t.Fatalf("create topic %s: %v", name, err)
 	}
-	conn.Close()
+	_ = conn.Close()
 	// Topic creation is asynchronous on the broker; wait for it to appear in
 	// metadata so the immediately following writes cannot race it.
 	client := &kafka.Client{Addr: kafka.TCP(brokers...)}
@@ -207,12 +209,12 @@ func mustProtoEvent(t *testing.T, transportID string) []byte {
 			SourceId: "dddd0000-0000-0000-0000-000000000002", SourceType: eventv1.SourceType_SOURCE_TYPE_DEEPFLOW,
 			ExternalRuleId: "r1",
 		},
-		Resource: &eventv1.ResourceRef{ClusterId: "c1", ResourceType: "pod", ResourceUid: "u1"},
-		Kind:     eventv1.EventKind_EVENT_KIND_STATEFUL,
-		Signal:   eventv1.EventSignal_EVENT_SIGNAL_FIRING,
-		Severity: eventv1.Severity_SEVERITY_CRITICAL,
+		Resource:  &eventv1.ResourceRef{ClusterId: "c1", ResourceType: "pod", ResourceUid: "u1"},
+		Kind:      eventv1.EventKind_EVENT_KIND_STATEFUL,
+		Signal:    eventv1.EventSignal_EVENT_SIGNAL_FIRING,
+		Severity:  eventv1.Severity_SEVERITY_CRITICAL,
 		AlertName: "DLQTest",
-		EventKey: "ek-" + transportID,
+		EventKey:  "ek-" + transportID,
 	}
 	raw, err := proto.Marshal(ev)
 	if err != nil {

@@ -43,6 +43,11 @@ test:
 test-pg:
 	GOWORK=off go test -count=1 -v ./internal/infrastructure/postgres/
 
+# golangci-lint quality gate (pinned v2.15.0 in CI): zero-finding baseline
+# established 2026-11-15 (errcheck/staticcheck/govet/ineffassign/unused).
+lint:
+	golangci-lint run --timeout=5m
+
 # BASE-001: enforce docs/02 §3 layer dependency direction.
 deps-lint:
 	python3 scripts/check_deps.py

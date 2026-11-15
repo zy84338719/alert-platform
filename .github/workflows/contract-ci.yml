@@ -36,6 +36,14 @@ jobs:
       - name: generated-code drift (gen/ in sync with protos)
         run: make idl-drift
       - run: go build ./...
+      # Quality gate (2026-11-15 deep-optimization round): the repo lint
+      # baseline is ZERO findings (errcheck/staticcheck/govet/ineffassign/
+      # unused, golangci-lint v2.15.0 — pinned to match local runs).
+      - name: golangci-lint (pinned; zero-finding baseline)
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.15.0
+          args: --timeout=5m
       - run: go test ./...
       # BASE-005 PG integration (Testcontainers; runner provides Docker).
       - run: go test -count=1 -v ./internal/infrastructure/postgres/

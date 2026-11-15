@@ -38,20 +38,20 @@ var (
 type Record = edge.Record
 
 type frame struct {
-	CRC  uint32 `json:"c"`
-	Rec  Record `json:"r"`
+	CRC uint32 `json:"c"`
+	Rec Record `json:"r"`
 }
 
 // Log is the segment-structured WAL.
 type Log struct {
-	mu        sync.Mutex
-	dir       string
-	maxBytes  int64
-	nextSeq   uint64
-	ackSeq    int64 // longest CONTIGUOUS confirmed prefix; -1 = nothing confirmed (0 is a VALID seq)
-	ackedSet  map[uint64]struct{} // confirmed seqs above the watermark; a hole below blocks advance
-	file      *os.File
-	fileSize  int64
+	mu         sync.Mutex
+	dir        string
+	maxBytes   int64
+	nextSeq    uint64
+	ackSeq     int64               // longest CONTIGUOUS confirmed prefix; -1 = nothing confirmed (0 is a VALID seq)
+	ackedSet   map[uint64]struct{} // confirmed seqs above the watermark; a hole below blocks advance
+	file       *os.File
+	fileSize   int64
 	totalBytes int64
 
 	// Crash-injection points for tests (nil in production): Compact aborts at
@@ -122,7 +122,7 @@ func readSegment(path string, each func(Record)) ([]Record, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []Record
 	var valid int64
 	for {
@@ -263,11 +263,11 @@ func (l *Log) Ack(seq uint64) {
 // are the superseded segments removed — every crash window leaves at least
 // one durable copy of every unacked record on disk. Order:
 //
-//	1. write replacement (".compact-tmp") + fsync file + fsync dir
-//	2. close the active segment (its unacked frames are in the replacement)
-//	3. rename tmp → wal-<first-keep-seq>.log (atomic; same dir) + fsync dir
-//	4. remove superseded segments + fsync dir
-//	5. rotate a fresh active segment
+//  1. write replacement (".compact-tmp") + fsync file + fsync dir
+//  2. close the active segment (its unacked frames are in the replacement)
+//  3. rename tmp → wal-<first-keep-seq>.log (atomic; same dir) + fsync dir
+//  4. remove superseded segments + fsync dir
+//  5. rotate a fresh active segment
 //
 // A kill -9 between any two steps recovers to the pre-step state (step 1–2)
 // or to a superset of the unacked records (step 3–4, transient duplicates
@@ -316,23 +316,23 @@ func (l *Log) Compact() error {
 	for _, r := range keep {
 		payload, err := json.Marshal(frame{CRC: crc32.ChecksumIEEE(r.Body), Rec: r})
 		if err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		hdr := make([]byte, 8)
 		binary.BigEndian.PutUint64(hdr, uint64(len(payload)))
 		if _, err := f.Write(hdr); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		if _, err := f.Write(payload); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		total += int64(len(payload)) + 8
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -381,7 +381,7 @@ func syncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 

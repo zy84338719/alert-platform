@@ -25,19 +25,19 @@ type Stream interface {
 
 // Event mirrors sseclient.Event at the application boundary.
 type Event struct {
-	ID                       string
-	Name                     string
-	Data                     string
-	Gap                      bool
-	GapFrom, GapTo           string
+	ID             string
+	Name           string
+	Data           string
+	Gap            bool
+	GapFrom, GapTo string
 }
 
 // Config wires the collector.
 type Config struct {
-	TenantID   string
-	SourceID   string
-	ClusterID  string
-	PromoteThreshold int    // occurrences within Window -> one firing alert
+	TenantID         string
+	SourceID         string
+	ClusterID        string
+	PromoteThreshold int // occurrences within Window -> one firing alert
 	PromoteWindow    time.Duration
 	AlertNamePrefix  string
 }
@@ -116,20 +116,20 @@ type cloudEvent struct {
 }
 
 type watchEventData struct {
-	Hostname              string          `json:"hostname"`
-	Region                string          `json:"region"`
-	ObservedTimestamp     string          `json:"observed_timestamp"`
-	UploadedTimestamp     string          `json:"uploaded_timestamp"`
-	TracerName            string          `json:"tracer_name"`
-	TracerID              json.RawMessage `json:"tracer_id"`
-	TracerRunType         string          `json:"tracer_run_type"`
-	TracerType            string          `json:"tracer_type"`
-	ContainerID           string          `json:"container_id"`
-	ContainerHostname     string          `json:"container_hostname"`
-	ContainerHostNamespace string         `json:"container_host_namespace"`
-	ContainerType         string          `json:"container_type"`
-	ContainerQos          string          `json:"container_qos"`
-	TracerData            json.RawMessage `json:"tracer_data"`
+	Hostname               string          `json:"hostname"`
+	Region                 string          `json:"region"`
+	ObservedTimestamp      string          `json:"observed_timestamp"`
+	UploadedTimestamp      string          `json:"uploaded_timestamp"`
+	TracerName             string          `json:"tracer_name"`
+	TracerID               json.RawMessage `json:"tracer_id"`
+	TracerRunType          string          `json:"tracer_run_type"`
+	TracerType             string          `json:"tracer_type"`
+	ContainerID            string          `json:"container_id"`
+	ContainerHostname      string          `json:"container_hostname"`
+	ContainerHostNamespace string          `json:"container_host_namespace"`
+	ContainerType          string          `json:"container_type"`
+	ContainerQos           string          `json:"container_qos"`
+	TracerData             json.RawMessage `json:"tracer_data"`
 }
 
 // entityIdentity maps the WatchEventData node/container identity to the
@@ -215,7 +215,7 @@ func parseCloudEvent(data string) (*cloudEvent, error) {
 func (s *Service) handle(ev Event) error {
 	if ev.Gap {
 		gapCount++
-		logx.CtxWarn(nil, "SSE GAP detected: events lost while disconnected (SSE is not replayable)",
+		logx.CtxWarn(context.Background(), "SSE GAP detected: events lost while disconnected (SSE is not replayable)",
 			"from", ev.GapFrom, "to", ev.GapTo, "source", s.cfg.SourceID)
 		// The gap itself becomes a first-class occurrence so the platform
 		// shows the blind window instead of silently missing data. Gaps have

@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/processor"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/infrastructure/postgres"
 	"github.com/example/alert-platform/internal/infrastructure/testenv"
 )
@@ -46,7 +46,7 @@ func TestIngestPipelineE2E(t *testing.T) {
 
 	// 1) Ingest: durable producer via the application service.
 	producer := NewProducer(brokers, topic)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	ingestSvc := ingest.NewService(producer)
 
 	batchID := "e2e-batch-1"
@@ -125,7 +125,7 @@ func TestIngestDuplicateBatchNoNewTransitions(t *testing.T) {
 	}
 
 	producer := NewProducer(brokers, topic)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	ingestSvc := ingest.NewService(producer)
 	ev := canonicalEvent()
 	for i := 0; i < 2; i++ { // original + client retry of the same batch
@@ -164,7 +164,7 @@ func fetchOne(t *testing.T, brokers []string, topic string) processor.IncomingMe
 		MaxBytes:  10e6,
 		MaxWait:   500 * time.Millisecond,
 	})
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	msg, err := reader.ReadMessage(ctx)

@@ -41,7 +41,7 @@ func TestOutageReplayNoLossAroundRejectedRecord(t *testing.T) {
 		mu.Unlock()
 		if isRejected {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error":"batch %s rejected"}`, id)
+			_, _ = fmt.Fprintf(w, `{"error":"batch %s rejected"}`, id)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)

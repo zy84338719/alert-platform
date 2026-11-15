@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -87,6 +88,13 @@ type UploaderConfig struct {
 
 // NewUploader builds the uploader (TLS files optional).
 func NewUploader(w WAL, cfg UploaderConfig) (*Uploader, error) {
+	// P8-P0-02: the uplink identity is a pair — the central API switches to the
+	// edge-credential path on X-Edge-Id, so a token without an id (or an id
+	// without a token) would authenticate against the wrong path and 401 at
+	// runtime. Fail at startup instead of failing every upload.
+	if (cfg.UplinkToken == "") != (cfg.EdgeID == "") {
+		return nil, fmt.Errorf("edge uploader: UplinkToken and EdgeID must be configured together")
+	}
 	transport := &http.Transport{MaxIdleConns: 4}
 	tlsCfg := &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify} //nolint:gosec
 	if cfg.ClientCertFile != "" && cfg.ClientKeyFile != "" {
@@ -219,9 +227,9 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 		if err != nil {
 			return sent, fmt.Errorf("post batch %s: %w", rec.ID, err)
 		}
-		body := make([]byte, 256)
-		n, _ := resp.Body.Read(body)
-		resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		_ = resp.Body.Close()
+		n := len(body)
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 			// 5xx/429: retry later; 4xx (except 429): the center rejected the
 			// payload — retrying cannot fix it, but dropping silently is
@@ -283,7 +291,7 @@ func (u *Uploader) heartbeat(ctx context.Context) {
 		logx.CtxWarn(ctx, "edge heartbeat failed", logx.ErrKey, err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 // Once wiring helper for tests.

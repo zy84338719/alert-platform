@@ -699,3 +699,39 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - 证据：`docs/evidence/P8-cluster-verification-rpi-k3s-2026-11-15.md`（限制：无公网出口 → worker 通知
   真实外呼待有外网环境；无 Kafka → 消费链路待接入；P8-012 真实集成仍挂账）。
 - 清理：临时 Pod `p8-nettest-worker`、`image-import` 及测试数据已删除。
+
+---
+
+## 2026-11-15 · R19：深度优化轮（静态检查清零 + 自审加固 + CI 质量门）
+
+### 交付
+
+- **lint 基线 56 → 0**（golangci-lint v2.15.0：errcheck 47 / staticcheck 9）：
+  errcheck 覆盖生产与测试（WAL/SSE/Edge/ Kafka/Migrate 的 Close、响应体读取、测试内 Append/Write/Fprintf）；
+  staticcheck 覆盖 QF1002 tagged switch（3 处）、SA1012 nil ctx、SA4017 死分支、ST1005 错误串、SA4000 空断言。
+- **自审加固（2 处真实缺陷）**：
+  1. Edge 上行身份配置配对校验：`UplinkToken`/`EdgeID` 必须成对（中央按 `X-Edge-Id` 选鉴权路径），
+     半配置在 `NewUploader` 启动期直接失败——不再让每条上传运行时 401。
+  2. `HTTPSender` 字面量构造（未经 NewHTTPSender）时 `resolve` 为 nil → guardedDial 现在回退
+     DefaultResolver，避免 nil deref panic（含回归测试）。
+- **真实问题修复**：collector 向 logx 传 nil ctx（SA1012）；sseclient 心跳注释行死 case 改为显式
+  `continue`（行为不变、意图明确）；authn_test 的恒真断言（SA4000）改为真实确定性+SHA-256 长度断言；
+  `sseclient.Stop` → `ErrStop`（ST1012，仅包内使用）；Edge uploader 响应体读取忽略错误改为完整读+错误检查。
+- **质量门固化**：CI `contract-and-domain` 增 golangci-lint v2.15.0（pin，零发现基线）步骤；
+  Makefile 增 `make lint`。
+
+### 验收证据
+
+| 项 | 结果 |
+| --- | --- |
+| `golangci-lint run ./...` / `make lint` | **0 issues** |
+| `go vet ./...` | 通过 |
+| `go test ./...`（PG 55432 / Kafka 19092） | 全绿 19 包 |
+| `go test -race ./...` | 全绿 EXIT=0 |
+| `buf lint` / `buf build` | 通过（零 IDL 变更） |
+| chart 策略矩阵 / check_deps / validate_package | PASS / OK（34 包、104 backlog） |
+
+### 说明
+
+- 本轮无业务语义变更（除启动期配置校验与 resolver 兜底），不触碰 P8 已验收链路。
+- CI 新增 lint 步骤会在下一次 push 生效；本地与 CI 使用同一 pin 版本，避免版本漂移。

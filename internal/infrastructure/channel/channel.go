@@ -76,7 +76,13 @@ func (s *HTTPSender) guardedDial(d *net.Dialer) func(ctx context.Context, networ
 		if err != nil {
 			return nil, fmt.Errorf("channel dial %q: %w", addr, err)
 		}
-		ips, err := s.resolve(ctx, host)
+		resolve := s.resolve
+		if resolve == nil { // sender built as a literal, not via NewHTTPSender
+			resolve = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				return net.DefaultResolver.LookupIPAddr(ctx, host)
+			}
+		}
+		ips, err := resolve(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("channel resolve %q: %w", host, err)
 		}
@@ -146,7 +152,7 @@ func (s *HTTPSender) Send(ctx context.Context, channelType string, cfg []byte, p
 		}
 		return SendResult{FailureCode: "retryable", Err: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// The body must survive until vendor validation (P8-P0-03): a 2xx alone
 	// does NOT mean the bot accepted the message.
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))

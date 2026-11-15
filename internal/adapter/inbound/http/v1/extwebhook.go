@@ -20,9 +20,9 @@ import (
 	"github.com/oekit/logx"
 	mw "github.com/oekit/middleware"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/adapter/translate"
 	"github.com/example/alert-platform/internal/application/sourcereg"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	ekiterrors "github.com/oekit/pkg/errors"
 )
 
@@ -61,11 +61,11 @@ func authenticate(ctx context.Context, c *app.RequestContext, want eventv1.Sourc
 	}
 	src, err := SourceRegistry.Authenticate(ctx, bearerToken(c))
 	if err != nil {
-		switch {
-		case err == sourcereg.ErrUnauthenticated:
+		switch err {
+		case sourcereg.ErrUnauthenticated:
 			// Deliberately vague: unknown vs revoked must be indistinguishable.
 			failVendor(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
-		case err == sourcereg.ErrDisabled:
+		case sourcereg.ErrDisabled:
 			failVendor(ctx, c, ekiterrors.NewBizErrorWithStatus(40302, 403, "source disabled"))
 		default:
 			failVendor(ctx, c, ekiterrors.NewBizErrorWithStatus(50001, 500, "registry unavailable"))

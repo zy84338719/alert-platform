@@ -12,9 +12,9 @@ import (
 
 	"github.com/example/alert-platform/internal/application/authn"
 	"github.com/oekit/logx"
-	"github.com/oekit/tracing/traceid"
-	ekiterrors "github.com/oekit/pkg/errors"
 	mw "github.com/oekit/middleware"
+	ekiterrors "github.com/oekit/pkg/errors"
+	"github.com/oekit/tracing/traceid"
 )
 
 // Authn is bound by cmd wiring; nil fails closed — every protected endpoint
@@ -43,10 +43,10 @@ func requirePerm(ctx context.Context, c *app.RequestContext, permission string) 
 	token := bearerToken(c)
 	id, err := Authn.Require(ctx, token, permission)
 	if err != nil {
-		switch {
-		case err == authn.ErrUnauthenticated:
+		switch err {
+		case authn.ErrUnauthenticated:
 			mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
-		case err == authn.ErrForbidden:
+		case authn.ErrForbidden:
 			// id is nil on this branch (Require failed before returning one).
 			logx.CtxWarn(ctx, "rbac denied", "component", "alert-api", "permission", permission)
 			mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40301, 403, "role lacks permission: "+permission))

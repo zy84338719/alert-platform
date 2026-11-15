@@ -105,7 +105,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open raw connection: %v", err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	stmt, err := os.ReadFile(filepath.Join(dir, "0001_initial.up.sql"))
 	if err != nil {
 		t.Fatal(err)

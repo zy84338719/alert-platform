@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"sync/atomic"
 	"errors"
 	"fmt"
 	"io"
@@ -18,24 +17,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Event is one parsed SSE event.
 type Event struct {
-	ID    string
-	Name  string // event:; "" = default "message"
-	Data  string
-	Gap   bool // true when this is a synthesized gap marker (not from the wire)
+	ID             string
+	Name           string // event:; "" = default "message"
+	Data           string
+	Gap            bool // true when this is a synthesized gap marker (not from the wire)
 	GapFrom, GapTo string
 }
 
-// Handler consumes events. Returning the exported Stop sentinel ends Run
+// Handler consumes events. Returning the exported ErrStop sentinel ends Run
 // cleanly (nil); any other error ends Run with that error.
 type Handler func(Event) error
 
-// Stop is the clean-termination sentinel for handlers.
-var Stop = errors.New("sse: stop")
+// ErrStop is the clean-termination sentinel for handlers.
+var ErrStop = errors.New("sse: stop")
 
 // Client connects to one SSE endpoint.
 type Client struct {
@@ -45,15 +45,15 @@ type Client struct {
 	// Bearer token. Method defaults to GET for plain SSE; POST requests send
 	// Body with Content-Type: application/json; BearerToken is sent as the
 	// Authorization header.
-	Method      string
-	Body        []byte
-	BearerToken string
+	Method           string
+	Body             []byte
+	BearerToken      string
 	HeartbeatTimeout time.Duration // no data for this long -> reconnect (default 30s)
 	// CursorKind: how to detect gaps. "seq" compares numeric event ids.
 	GapDetection bool
 
-	mu     sync.Mutex
-	lastID string
+	mu      sync.Mutex
+	lastID  string
 	lastSeq int64
 }
 
@@ -78,7 +78,7 @@ func (c *Client) Run(ctx context.Context, handle Handler) error {
 				return nil
 			}
 			if isPermanent(handleErr(err)) { // handler asked to stop
-				if unWrap(err) == Stop {
+				if unWrap(err) == ErrStop {
 					return nil
 				}
 				return unWrap(err)
@@ -96,7 +96,7 @@ func (c *Client) Run(ctx context.Context, handle Handler) error {
 type handlerError struct{ err error }
 
 func (e *handlerError) Error() string { return "handler: " + e.err.Error() }
-func handleErr(err error) error      { return err }
+func handleErr(err error) error       { return err }
 func isPermanent(err error) bool {
 	var he *handlerError
 	return errors.As(err, &he)
@@ -151,7 +151,7 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sse endpoint returned %d", resp.StatusCode)
 	}
@@ -181,7 +181,7 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 				last := time.Unix(0, lastActivity.Load())
 				if time.Since(last) > c.HeartbeatTimeout {
 					// silent for the whole window: force reconnect by closing the body
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					return
 				}
 			}
@@ -209,6 +209,11 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 			if err := flush(); err != nil {
 				return &handlerError{err}
 			}
+			continue
+		}
+		// Comment/heartbeat lines (": ping") are keepalives only: lastActivity
+		// is refreshed above, nothing to dispatch.
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
 		switch {
@@ -246,8 +251,6 @@ func (c *Client) streamOnce(ctx context.Context, handle Handler) error {
 			c.mu.Lock()
 			c.lastID = id
 			c.mu.Unlock()
-		case strings.HasPrefix(line, ":"):
-			// comment/heartbeat: keepalive from the server
 		}
 	}
 	return scanner.Err()

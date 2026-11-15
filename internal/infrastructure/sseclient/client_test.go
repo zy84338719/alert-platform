@@ -2,10 +2,10 @@ package sseclient
 
 import (
 	"context"
-	"strings"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,7 +21,7 @@ func TestStreamDeliversEventsInOrder(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
 		for i := 1; i <= 3; i++ {
-			fmt.Fprintf(w, "id: %d\nevent: kernel\ndata: {\"kind\":\"oom\",\"n\":%d}\n\n", i, i)
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: kernel\ndata: {\"kind\":\"oom\",\"n\":%d}\n\n", i, i)
 			fl.Flush()
 		}
 		time.Sleep(300 * time.Millisecond) // keep the stream open a bit
@@ -38,7 +38,7 @@ func TestStreamDeliversEventsInOrder(t *testing.T) {
 			t.Errorf("event name = %q", ev.Name)
 		}
 		if len(got) == 3 {
-			return Stop
+			return ErrStop
 		}
 		return nil
 	})
@@ -71,13 +71,13 @@ func TestReconnectSendsCursorAndDetectsGap(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
 		if reqNo == 1 {
-			fmt.Fprint(w, "id: 1\ndata: a\n\nid: 2\ndata: b\n\n")
+			_, _ = fmt.Fprint(w, "id: 1\ndata: a\n\nid: 2\ndata: b\n\n")
 			fl.Flush()
 			time.Sleep(150 * time.Millisecond) // then die (client reconnects)
 			return
 		}
 		// Server resumed at id 5 while we last saw 2 -> ids 3..4 are LOST.
-		fmt.Fprint(w, "id: 5\ndata: c\n\n")
+		_, _ = fmt.Fprint(w, "id: 5\ndata: c\n\n")
 		fl.Flush()
 		time.Sleep(200 * time.Millisecond)
 	}))
@@ -95,7 +95,7 @@ func TestReconnectSendsCursorAndDetectsGap(t *testing.T) {
 			}
 		}
 		if ev.ID == "5" {
-			return Stop
+			return ErrStop
 		}
 		return nil
 	})
@@ -127,7 +127,7 @@ func TestHeartbeatTimeoutReconnects(t *testing.T) {
 			time.Sleep(3 * time.Second)
 			return
 		}
-		fmt.Fprint(w, "id: 1\ndata: alive\n\n")
+		_, _ = fmt.Fprint(w, "id: 1\ndata: alive\n\n")
 		w.(http.Flusher).Flush()
 		time.Sleep(300 * time.Millisecond)
 	}))
@@ -139,7 +139,7 @@ func TestHeartbeatTimeoutReconnects(t *testing.T) {
 	go func() {
 		_ = c.Run(context.Background(), func(ev Event) error {
 			close(done)
-			return Stop
+			return ErrStop
 		})
 	}()
 	select {
@@ -177,7 +177,7 @@ func TestWatchHandshakePOSTBodyBearer(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprint(w, "id: 1\ndata: {\"specversion\":\"1.0\"}\n\n")
+		_, _ = fmt.Fprint(w, "id: 1\ndata: {\"specversion\":\"1.0\"}\n\n")
 		fl.Flush()
 		time.Sleep(200 * time.Millisecond)
 	}))
@@ -188,7 +188,7 @@ func TestWatchHandshakePOSTBodyBearer(t *testing.T) {
 	c.BearerToken = "node-token-1"
 	c.Body = []byte(`{"filters":{"tracer_name":"^memory_oom_kill$"}}`)
 	c.HeartbeatTimeout = 5 * time.Second
-	_ = c.Run(context.Background(), func(Event) error { return Stop })
+	_ = c.Run(context.Background(), func(Event) error { return ErrStop })
 	mu.Lock()
 	defer mu.Unlock()
 	if handshakes == 0 {
@@ -219,9 +219,9 @@ func TestHeartbeatKeepAliveWhileStreaming(t *testing.T) {
 			default:
 			}
 			if i%2 == 0 {
-				fmt.Fprint(w, ": ping\n\n")
+				_, _ = fmt.Fprint(w, ": ping\n\n")
 			} else {
-				fmt.Fprintf(w, "id: %d\ndata: {\"n\":%d}\n\n", i, i)
+				_, _ = fmt.Fprintf(w, "id: %d\ndata: {\"n\":%d}\n\n", i, i)
 			}
 			fl.Flush()
 			i++

@@ -247,7 +247,7 @@ func TestGuardedDialPinsValidatedIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -255,7 +255,7 @@ func TestGuardedDialPinsValidatedIP(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				buf := make([]byte, 4096)
 				_, _ = c.Read(buf)
 				_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))
@@ -290,4 +290,21 @@ func TestGuardedDialRejectsBlockedRebind(t *testing.T) {
 	if res.Sent || res.FailureCode != "ssrf" {
 		t.Fatalf("mixed-resolution rebind must be rejected as ssrf: %+v", res)
 	}
+}
+
+// P8 自审加固：未走 NewHTTPSender 构造的字面量 Sender 也必须能安全拨号
+// （resolve 未注入时回退 DefaultResolver）；旧实现会 nil deref panic。
+func TestGuardedDialWithoutInjectedResolver(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	s := &HTTPSender{AllowPrivate: true}
+	dial := s.guardedDial(&net.Dialer{Timeout: 2 * time.Second})
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("guarded dial with default resolver: %v", err)
+	}
+	_ = conn.Close()
 }

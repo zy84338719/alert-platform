@@ -117,7 +117,7 @@ func externalPostgres(t *testing.T, maintenanceDSN string) string {
 		t.Fatalf("create test database: %v", err)
 	}
 	t.Cleanup(func() {
-		defer admin.Close()
+		defer func() { _ = admin.Close() }()
 		cctx, ccancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ccancel()
 		if _, err := admin.ExecContext(cctx,

@@ -64,10 +64,10 @@ func IngestAuthMiddleware() app.HandlerFunc {
 
 // authFailure maps registry sentinels to the fail-closed HTTP responses.
 func authFailure(ctx context.Context, c *app.RequestContext, err error) {
-	switch {
-	case err == sourcereg.ErrUnauthenticated:
+	switch err {
+	case sourcereg.ErrUnauthenticated:
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
-	case err == sourcereg.ErrDisabled:
+	case sourcereg.ErrDisabled:
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40302, 403, "source disabled"))
 	default:
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50001, 500, "registry unavailable"))

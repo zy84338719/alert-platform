@@ -23,8 +23,7 @@ import (
 // center receiving the batch. Acceptance: < 10s (local: well under 1s).
 func TestKernelEventToCenterUnder10s(t *testing.T) {
 	receivedAt := make(chan time.Time, 16)
-	var centerSrv *httptest.Server
-	centerSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	centerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 1<<16)
 		n, _ := r.Body.Read(buf)
 		var payload map[string]any
@@ -45,7 +44,7 @@ func TestKernelEventToCenterUnder10s(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		fmt.Fprintf(w, "id: %s\ndata: %s\n\n", "7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01", string(ce))
+		_, _ = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", "7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01", string(ce))
 		fl.Flush()
 		sent.Store(true)
 		// keep the stream open until the test tears down
@@ -73,8 +72,8 @@ func TestKernelEventToCenterUnder10s(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	start := time.Now()
-	go col.Run(ctx)
-	go up.Run(ctx)
+	go func() { _ = col.Run(ctx) }()
+	go func() { _ = up.Run(ctx) }()
 
 	select {
 	case at := <-receivedAt:
@@ -105,7 +104,7 @@ func TestGapRecordingAndBurstPromotion(t *testing.T) {
 			ev := strings.Replace(string(ce),
 				"7f9d3a1e-5b2c-4f8a-9e1d-3c6b2a7d4f01",
 				fmt.Sprintf("00000000-0000-0000-0000-00000000000%d", i+1), 2)
-			fmt.Fprintf(w, "id: %s\ndata: %s\n\n", id, ev)
+			_, _ = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", id, ev)
 		}
 		// cursor jump: 4..6 lost while "disconnected"
 		fl.Flush()
@@ -124,7 +123,7 @@ func TestGapRecordingAndBurstPromotion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go col.Run(ctx)
+	go func() { _ = col.Run(ctx) }()
 
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {

@@ -65,7 +65,7 @@ func main() {
 		store := postgres.NewStore(pool)
 		processorSvc := processor.NewService(store)
 		consumer := kafka.NewConsumer(brokers, cfg.KafkaTopic, cfg.KafkaGroupID, cfg.KafkaDLQTopic)
-		defer consumer.Close()
+		defer func() { _ = consumer.Close() }()
 
 		// relay: domain_outbox -> lifecycle topic.
 		relaySvc := relay.NewService(store, kafka.NewProducer(brokers, cfg.KafkaLifecycleTopic))

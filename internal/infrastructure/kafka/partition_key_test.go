@@ -15,9 +15,9 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/processor"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/infrastructure/postgres"
 	"github.com/example/alert-platform/internal/infrastructure/testenv"
 )
@@ -58,7 +58,7 @@ func TestPartitionKeySpreadsLogicalAlerts(t *testing.T) {
 	}
 
 	producer := NewProducer(brokers, topic)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	ingestSvc := ingest.NewService(producer)
 
 	// 同一来源的 20 个不同逻辑告警（不同指纹）+ 同一逻辑告警的 3 次观察。
@@ -101,7 +101,7 @@ func TestPartitionKeySpreadsLogicalAlerts(t *testing.T) {
 					}
 				}
 			}
-			consumer.Close()
+			_ = consumer.Close()
 		}
 	}
 	if len(partOf) < 23 {
@@ -175,7 +175,7 @@ func TestBatchPartialSuccessRetryIdempotent(t *testing.T) {
 	}
 
 	producer := NewProducer(brokers, topic)
-	defer producer.Close()
+	defer func() { _ = producer.Close() }()
 	svc := ingest.NewService(&partialPub{next: producer})
 
 	small := ptEvent("rule-ok", "pod-ok")
@@ -238,7 +238,7 @@ func fetchOneTimeout(t *testing.T, brokers []string, topic string, timeout time.
 		Brokers: brokers, Topic: topic, GroupID: "pbatch-consumer",
 		MinBytes: 1, MaxBytes: 10e6, MaxWait: 200 * time.Millisecond,
 	})
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	msg, err := consumer.ReadMessage(ctx)

@@ -15,7 +15,7 @@ import (
 // (docs/13 BASE-006 "configuration assertion"): durability before response.
 func TestProducerRequiresAcksAll(t *testing.T) {
 	p := NewProducer([]string{"127.0.0.1:9092"}, "unused-topic")
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	if p.RequiredAcks() != kafka.RequireAll {
 		t.Fatalf("RequiredAcks = %v, want RequireAll (acks=all)", p.RequiredAcks())
 	}
@@ -37,7 +37,7 @@ func TestProducerPublishConsumeRoundTrip(t *testing.T) {
 	}
 
 	p := NewProducer(brokers, topic)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -62,7 +62,7 @@ func TestProducerPublishConsumeRoundTrip(t *testing.T) {
 		MaxBytes:  10e6,
 		MaxWait:   500 * time.Millisecond,
 	})
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	readCtx, readCancel := context.WithTimeout(ctx, 20*time.Second)
 	defer readCancel()
 	msg, err := reader.ReadMessage(readCtx)
@@ -88,7 +88,7 @@ func TestProducerPublishConsumeRoundTrip(t *testing.T) {
 // a silent drop.
 func TestProducerBrokerDownFailsLoudly(t *testing.T) {
 	p := NewProducer([]string{"127.0.0.1:1"}, "unused") // nothing listens here
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := p.Publish(ctx, "k", nil, []byte("v")); err == nil {

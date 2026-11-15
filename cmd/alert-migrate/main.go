@@ -24,5 +24,5 @@ func main() {
 		fmt.Fprintln(os.Stderr, "migrate:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stdout, "schema version %d\n", version)
+	_, _ = fmt.Fprintf(os.Stdout, "schema version %d\n", version)
 }

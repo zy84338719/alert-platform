@@ -69,12 +69,12 @@ func main() {
 				"source":       map[string]any{"source_id": source, "source_type": 1, "external_rule_id": fmt.Sprintf("rule-%d", rand.Intn(50))},
 				"resource":     map[string]any{"cluster_id": "perf", "resource_type": "pod", "resource_uid": uid},
 				"kind":         1, "signal": 1, "severity": 1 + rand.Intn(3),
-				"alert_name":   "LoadGen Alert",
-				"occurred_at":  map[string]int64{"seconds": now.Unix()},
-				"received_at":  map[string]int64{"seconds": now.Unix()},
-				"starts_at":    map[string]int64{"seconds": now.Unix()},
-				"event_key":    fmt.Sprintf("lg-%d-%d", t, i),
-				"labels":       map[string]string{"ns": fmt.Sprintf("ns-%d", rand.Intn(8))},
+				"alert_name":  "LoadGen Alert",
+				"occurred_at": map[string]int64{"seconds": now.Unix()},
+				"received_at": map[string]int64{"seconds": now.Unix()},
+				"starts_at":   map[string]int64{"seconds": now.Unix()},
+				"event_key":   fmt.Sprintf("lg-%d-%d", t, i),
+				"labels":      map[string]string{"ns": fmt.Sprintf("ns-%d", rand.Intn(8))},
 			}
 			events = append(events, ev)
 			transportIDs = append(transportIDs, fmt.Sprintf("lg-%d-%d", t, i))
@@ -101,11 +101,11 @@ func main() {
 					pushErrs++
 					mu.Unlock()
 					if resp != nil {
-						resp.Body.Close()
+						_ = resp.Body.Close()
 					}
 					return
 				}
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				d := time.Since(t0)
 				mu.Lock()
 				pushLat = append(pushLat, d)

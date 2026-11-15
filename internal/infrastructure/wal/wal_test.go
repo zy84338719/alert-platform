@@ -3,8 +3,8 @@ package wal
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -17,7 +17,7 @@ func newLog(t *testing.T, maxBytes int64) *Log {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { l.file.Close() })
+	t.Cleanup(func() { _ = l.file.Close() })
 	return l
 }
 
@@ -45,7 +45,7 @@ func TestAppendSurvivesCrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l2.file.Close()
+	defer func() { _ = l2.file.Close() }()
 	p, err := l2.Pending()
 	if err != nil {
 		t.Fatal(err)
@@ -65,18 +65,22 @@ func TestAppendSurvivesCrash(t *testing.T) {
 func TestTornFrameDropped(t *testing.T) {
 	dir := t.TempDir()
 	l, _ := Open(dir, 0, 1<<20)
-	l.Append(rec("a", "hello"))
+	if _, err := l.Append(rec("a", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
 	seq := l.SeqLabel() // nextSeq AFTER the append; the record lives at seq-1
-	l.file.Close()
+	_ = l.file.Close()
 
 	// tear: append half a frame to the active segment
 	seg := filepath.Join(dir, "wal-"+pad(prev(seq))+".log")
 	f, _ := os.OpenFile(seg, os.O_WRONLY|os.O_APPEND, 0o644)
-	f.Write([]byte{0, 0, 0, 0, 0, 1, 2, 3, 'x', 'y'}) // length prefix + partial payload
-	f.Close()
+	if _, err := f.Write([]byte{0, 0, 0, 0, 0, 1, 2, 3, 'x', 'y'}); err != nil { // length prefix + partial payload
+		t.Fatalf("tear write: %v", err)
+	}
+	_ = f.Close()
 
 	l2, _ := Open(dir, 0, 1<<20)
-	defer l2.file.Close()
+	defer func() { _ = l2.file.Close() }()
 	p, _ := l2.Pending()
 	if len(p) != 1 || p[0].ID != "a" {
 		t.Fatalf("recovered %+v, want only the intact record", p)
@@ -131,7 +135,9 @@ func TestCapacityFullFailsClosed(t *testing.T) {
 func TestCompactNoHoles(t *testing.T) {
 	l := newLog(t, 0)
 	for i := 0; i < 10; i++ {
-		l.Append(rec(string(rune('a'+i)), "x"))
+		if _, err := l.Append(rec(string(rune('a'+i)), "x")); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
 	}
 	// P0-02 per-record acks: confirm prefix 0..2 exactly like the uploader.
 	l.Ack(0)
@@ -152,7 +158,9 @@ func TestCompactNoHoles(t *testing.T) {
 // Repeated ack of the same sequence never rewinds the watermark.
 func TestAckMonotonic(t *testing.T) {
 	l := newLog(t, 0)
-	l.Append(rec("a", "x"))
+	if _, err := l.Append(rec("a", "x")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
 	p, _ := l.Pending()
 	l.Ack(p[0].Seq)
 	l.Ack(0)

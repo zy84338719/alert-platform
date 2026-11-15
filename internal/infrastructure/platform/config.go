@@ -138,7 +138,9 @@ func LoadConfig(path string) (*Config, error) {
 	// therefore be projected into the env — unless LOG_LEVEL is already set
 	// explicitly, which wins (env-tag precedence stays intact).
 	if cfg.LogLevel != "" && os.Getenv("LOG_LEVEL") == "" {
-		os.Setenv("LOG_LEVEL", cfg.LogLevel)
+		if err := os.Setenv("LOG_LEVEL", cfg.LogLevel); err != nil {
+			return nil, fmt.Errorf("project LOG_LEVEL: %w", err)
+		}
 	}
 	return cfg, nil
 }
