@@ -651,3 +651,30 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - 任务书 §5 全表 **DONE×12**；§4 四项硬门槛全部关闭。
 - 仍挂账（非本轮范围）：ARC-002 真实 DeepFlow 样本、HUATUO 真实环境联调、真实通知沙箱、四集群实装、ClickHouse 归档实跑、生产 10min 压测复跑（P6-GoNoGo §4 五项不变）。
 - 兼容性注记：event_receipts 旧 key（fingerprint）数据无需迁移——新观察键命不中旧收据时走重复观察更新，语义自愈；lease_token 空 = pre-0008 行为；P0-03 上线前 Edge 需同步配置上传凭证（docs/12 §Edge 上传凭证）。
+---
+
+## 2026-11-15 · R17：P8 生产正确性整改 11 项全量关闭（P0×4 + P1×6 + REG-01；二评 → 落地）
+
+### 交付（11 commits，p8-p0-01 … p8-reg-01；任务书 `P8-Production-Correctness-2026-11-15.md` §8 已逐行回填）
+
+- **通知权（P0-01/P1-03/P1-04）**：迁移 0009 `notification_authority`（mode/generation/effective_at/initialized）+ `notification_outbox.authority_generation`；claim/peek 只认当前纪元，首次初始化强制新纪元且**不收养**迁移前任务 —— K8s 改 env 重启 Pod 的 Shadow→Active 切换零补发（P7 内存 shadowCutoff 失效场景）。静默复核 DB 错误改 fail-closed（retryable 重新调度，不默认发送）。发送前 `RenewNotifyLease`（lease_token 条件更新，stale 跳过防双发）+ 批次受限并发 + 每渠道速率上限。
+- **接入安全（P0-02/P0-04）**：迁移 0010 `edge_uplink_credentials`（edge_id→tenant→allowed_source_ids，只存 SHA-256，enabled 来源即时收缩）；中央按 `X-Edge-Id` 分支校验每事件来源；edge 侧 `ALERT_EDGE_UPLINK_TOKEN/EDGE_ID` 与 `ALERT_EDGE_SOURCE_TOKENS`（JSON）真正接入 UploaderConfig（修复 main 漏传 SourceTokens）。SSRF 拨号改为连接**已校验 IP 字面量**（保留 SNI/Host，多 A/AAAA 任一禁区即拒）。
+- **通知真伪（P0-03）**：飞书/钉钉响应 body 保留至校验：code/errcode 非零 → permanent（限流码 retryable），空/非 JSON 的 200 → unverified retryable，不再误判 sent；审计消息脱敏截断。
+- **平台与数据一致性（P1-01/02/05/06/REG-01）**：`RegisterRuntimeCheck` 直连 healthz 动态注册表（run() 内注册的 background-tasks 可见）；NetworkPolicy worker 默认公网 80/443（排除 RFC1918/link-local/CGNAT/IPv6 私网）+ edgeCentralNamespace/Port；ApplyEvent 身份 advisory lock + 迁移 0011 活跃态部分唯一索引（并发 Firing 单 episode）；发生聚合器 Prune + 10000 Key 配额；重复 Firing（稳定观察键）刷新 `last_observed_at` 且零额外通知/历史。
+
+### 验收证据（2026-11-15 复跑）
+
+| 项 | 结果 |
+| --- | --- |
+| `go test ./...`（PG 55432 / Kafka 19092 resident deps） | 全绿（19 包） |
+| `go test -race ./...` | 全绿 EXIT=0 |
+| `buf lint` / `buf build` | 通过（本轮零 IDL 变更，无需 breaking） |
+| `scripts/test_chart_policies.py` | PASS（含 P8-P1-02 默认通知出口/关闭回退/跨 ns 三段断言） |
+| 失败测试先行 | 每项均以旧实现可复现的失败测试开头（P0-01 另有跨进程 1000 任务场景；P1-05 含 DB 约束兜底断言） |
+| 迁移 | 0009/0010/0011 均为增量、可回滚；migrate 幂等/表清单/版本断言更新 |
+
+### 状态与挂账
+
+- 任务书 §2/§3/§4 全表 **DONE×11**；backlog 追加 P8-001..011（DONE）+ P8-012（真实集成，BLOCKED）→ 终态 DONE×94 / REVIEW×4 / BLOCKED×6。
+- §5 真实集成仍为**发布门槛**（外部输入）：真实 DeepFlow v7.2.4 Payload、HUATUO 真实联调、四集群、ClickHouse 实跑、飞书/钉钉沙箱、生产 10min 压测——P8 代码侧就绪，不以合成测试关闭。
+- **升级注意（运维）**：① 首次 P8 启动会开新 authority 纪元，迁移前的 pending 通知任务不再补发（保守选择：宁可一次性通知缺口，不可风暴）；② 多源 Edge 推荐登记上行身份（docs/12 §Edge 上传凭证），过渡期可用 `ALERT_EDGE_SOURCE_TOKENS`；③ 飞书/钉钉 200+业务错误码从此判失败，历史"假成功"会转为可重试/终态失败；④ 0011 要求同一 Fingerprint 无历史双活跃行（有则迁移失败，需先人工合并）。

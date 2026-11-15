@@ -175,20 +175,23 @@
 
 ## 8. 任务状态跟踪（AI 迭代时更新本表）
 
-| ID | 任务 | 状态 | 分支/Commit | 测试证据 | 备注 |
-| --- | --- | --- | --- | --- | --- |
-| P8-P0-01 | Shadow 权威持久化 | TODO | | | 先失败测试；1000 任务重启验收 |
-| P8-P0-02 | Edge 多来源上行身份 | TODO | | | 禁止复制明文 Token 方案 |
-| P8-P0-03 | 飞书/钉钉业务码校验 | TODO | | | Body 需保留至校验 |
-| P8-P0-04 | SSRF DNS 绑定修复 | TODO | | | 保留 SNI/Host |
-| P8-P1-01 | Readiness 注册时机 | TODO | | | |
-| P8-P1-02 | NetworkPolicy 默认出口 | TODO | | | rpi-k3s 实测 |
-| P8-P1-03 | 静默失败不放行 | TODO | | | |
-| P8-P1-04 | Lease 续租/限速 | TODO | | | at-least-once 语义写文档 |
-| P8-P1-05 | Fingerprint 并发互斥 | TODO | | | 部分唯一索引 |
-| P8-P1-06 | 聚合器内存淘汰 | TODO | | | P2 |
-| P8-REG-01 | 重复 Firing 刷新观察时间 | TODO | | | 回归测试 |
-| §5 | 真实集成（发布门槛） | TODO | | | 外部输入，代码侧完成后挂起 |
+**执行状态（2026-11-15）：P0×4 + P1×6 + REG-01 全量关闭（11 commits，p8-*）；§5 真实集成仍为发布门槛（BLOCKED，外部输入）。**
+验收基线：`go test ./...` 与 `go test -race ./...`（PG 55432 / Kafka 19092 resident deps）双绿；`buf lint/build` 通过（零 IDL 变更）；chart 策略矩阵含 P8-P1-02 断言通过。
+
+| ID | 任务 | 状态 | Commit | 测试证据 |
+| --- | --- | --- | --- | --- |
+| P8-P0-01 | Shadow 权威持久化 | DONE | `8098c20` | 1000 任务跨进程重启零补发（TestShadowAuthoritySurvivesRestart）+ PG generation 隔离矩阵（TestClaimNotifyTasksGenerationIsolation） |
+| P8-P0-02 | Edge 多来源上行身份 | DONE | `1fb6982` | 双来源上传+越权 403+禁用源收缩+轮换（TestEdgeUplinkCredentialStore / TestIngestEdgeUplinkMatrix）+ 上传头选择（TestUploaderUplinkCredentialSelection） |
+| P8-P0-03 | 飞书/钉钉业务码校验 | DONE | `64b1042` | 200+业务错误码/限流/空体/非 JSON 矩阵（TestVendorBusinessCodeValidation） |
+| P8-P0-04 | SSRF DNS 绑定 | DONE | `64b1042` | IP 钉扎拨号 + 混合解析拒绝（TestGuardedDialPinsValidatedIP / TestGuardedDialRejectsBlockedRebind） |
+| P8-P1-01 | Readiness 注册时机 | DONE | `f5ae236` | 晚注册 503 / 健康 200（TestLateRuntimeCheckIsObserved） |
+| P8-P1-02 | NetworkPolicy 默认出口 | DONE | `c8bacb5` | chart 矩阵：默认公网放行+私网排除、enabled=false 回退、edgeCentralNamespace 跨 ns |
+| P8-P1-03 | 静默失败不放行 | DONE | `6b982ee` | DB 错误→retryable 且 sender 未调用（TestSilenceCheckFailureDoesNotSend） |
+| P8-P1-04 | Lease 续租/限速 | DONE | `a1419cd` | PG 续租任务不被重领/旧 token fencing（TestRenewNotifyLeaseProtectsFromReclaim）+ 续租顺序/stale 不发送/限速间隔 |
+| P8-P1-05 | Fingerprint 并发互斥 | DONE | `bef3bf3` | 8 并发 Firing 单活跃 episode + 第二活跃行被部分唯一索引拒绝（TestConcurrentFiringSameFingerprintSingleEpisode） |
+| P8-P1-06 | 聚合器内存淘汰 | DONE | `ca5e608` | 过期淘汰 + Key 配额驱逐（TestAggregatorPrunesExpiredKeys / TestAggregatorKeyCapEvictsOldest） |
+| P8-REG-01 | 重复 Firing 刷新观察时间 | DONE | `30c419b` | 持续 firing 观察时间前进、通知=1、历史=1（TestRepeatFiringRefreshesObservation） |
+| §5 | 真实集成（发布门槛） | BLOCKED | — | 外部输入；代码侧就绪，待真实 DeepFlow/HUATUO/集群/渠道沙箱 |
 
 ---
 

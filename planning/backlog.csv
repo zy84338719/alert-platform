@@ -91,3 +91,15 @@ P7-009,P7,W21,P1,Backend-Governance,2,通知 Lease Fencing,迁移 0008 lease_tok
 P7-010,P7,W21,P1,Platform,2,Worker 后台任务故障传播,worker.TaskGroup 监督组+readiness runtime check,关键任务 fail-stop+panic 传播+辅助降级矩阵通过,P1-04,DONE
 P7-011,P7,W21,P1,SRE,2,NetworkPolicy 按组件拆分,api/worker/edge 三策略+per-component extraEgress,chart 矩阵+rpi-k3s 实测（edge→api 通/外呼拒）,CHAOS-002,DONE
 P7-012,P7,W21,P1,Backend-Integration,1,DeepFlow v7.2.4 基线,v7.2.4 契约目录+跨版本等价测试（取证：proto 双 tag 一致）,v7.2.4 golden/negative/parity 测试通过,ARC-002,DONE
+P8-001,P8,W22,P0,Backend-Core,3,通知权威持久化（Shadow→Active 跨重启）,notification_authority(mode/generation/effective_at/initialized)+outbox.authority_generation；claim/peek 只认当前纪元；首次初始化强制新纪元,1000 条 shadow 任务跨 Pod 重启零补发；PG generation 隔离矩阵,P7-007,DONE
+P8-002,P8,W22,P0,Security,3,Edge 多来源上行身份,edge_uplink_credentials(edge_id→tenant→allowed_source_ids)+X-Edge-Id 中央校验；ALERT_EDGE_UPLINK_TOKEN/EDGE_ID/SOURCE_TOKENS 接入启动装配,双来源 E2E+轮换+越权 403+禁用源即时收缩,P7-003,DONE
+P8-003,P8,W22,P0,Backend-Governance,2,飞书/钉钉业务响应码校验,保留 body；code/errcode 非零→permanent、限流码→retryable、空/非 JSON 200→unverified,HTTP 200+业务错误码不入 sent；审计脱敏截断,P7-006,DONE
+P8-004,P8,W22,P0,Security,2,SSRF DNS 绑定,校验后拨号用已校验 IP 字面量（保留 SNI/Host）；首个地址拨号、全量校验,DNS rebinding 测试+混合解析拒绝,P7-006,DONE
+P8-005,P8,W22,P1,Platform,1,Worker Readiness 注册时机,RegisterRuntimeCheck 直连 healthz 动态注册表（请求时读取）,run() 内注册的 background-tasks 可见；晚注册 503/健康 200,P7-010,DONE
+P8-006,P8,W22,P1,SRE,1,NetworkPolicy 默认通知出口,worker 默认公网 80/443（排除私网/link-local/CGNAT）+ edgeCentralNamespace/Port,chart 矩阵默认放行/关闭/跨 ns,P7-011,DONE
+P8-007,P8,W22,P1,Backend-Core,1,静默复核失败 fail-closed,DB 错误→retryable 重新调度，不默认发送,失败矩阵断言 sender 未调用,P7-006,DONE
+P8-008,P8,W22,P1,Backend-Core,2,通知 Lease 续租与渠道限速,发送前 RenewNotifyLease(token 条件)+批次受限并发(默认4)+per-channel 速率,PG 续租任务不被重领/旧 token fencing；限速间隔,P8-001,DONE
+P8-009,P8,W22,P1,Backend-Core,2,同 Fingerprint 并发互斥,ApplyEvent advisory lock+0011 部分唯一索引（活跃态唯一）,8 并发 Firing 单活跃 episode；第二活跃行被拒,P7-001,DONE
+P8-010,P8,W22,P2,Backend-Integration,1,HUATUO 聚合器内存有界,Prune 定期淘汰+DefaultMaxKeys 配额+Len 水位,过期淘汰/唯一键洪峰有界,P7-004,DONE
+P8-011,P8,W22,P1,Backend-Core,1,重复 Firing 刷新观察时间,receipt 去重路径刷新 last_observed_at（GREATEST+身份锁），零额外通知/历史,持续 firing 观察时间前进且通知=1,P7-001,DONE
+P8-012,P8,W22,P0,QA,5,真实集成发布门槛（DeepFlow/HUATUO/多集群/CH/渠道沙箱）,真实环境 E2E 报告,真实样本与故障演练通过,ARC-002,BLOCKED
