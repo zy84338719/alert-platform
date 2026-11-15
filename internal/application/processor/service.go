@@ -30,6 +30,12 @@ type IncomingMessage struct {
 	Key     string
 	Headers map[string]string
 	Value   []byte
+	// Origin carries the transport coordinates (optional). They are not used
+	// for processing; the consumer attaches them to DLQ messages so quarantined
+	// payloads can be traced back to a topic/partition/offset.
+	Topic     string
+	Partition int
+	Offset    int64
 }
 
 // Service processes canonical events into the store.

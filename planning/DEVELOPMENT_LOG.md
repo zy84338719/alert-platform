@@ -766,3 +766,28 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - `scripts/smoke_e2e.sh`：SMOKE PASS（202 → Kafka → worker → PG，trace 贯通，重复批次幂等）。
 - `scripts/replay_v02.sh`：REPLAY PASS（T-005/T-006/T-007：1000 重投单 transition、乱序不回滚、整批重放零重复）。
 - `go test ./...` / `golangci-lint` / `go vet`：全绿、0 issues。
+
+---
+
+## 2026-11-16 · R21：consumer 收尾优化 + DLQ 取证头 + 多副本 authority 回归 + DLQ 运维手册
+
+### 交付
+
+- **retry 收尾**：transient 错误重试耗尽后立即 fail-stop，不再白等最后一个退避周期
+  （此前 `attempt<=retries` 循环在最后一次失败后仍 sleep `backoff<<retries`）。
+- **DLQ 取证头**：隔离消息新增 `original_topic` / `original_partition` / `original_offset`
+  （`processor.IncomingMessage` 增可选 Origin 字段，consumer 填充）—— DLQ 里可直接定位
+  原分区偏移，配合已有 `dlq_error` 完成取证闭环。
+- **测试隔离修复**：`TestConsumerDLQAndFailStop` 改用每次运行唯一的 topic/group；固定名称
+  在 Kafka 数据跨容器重启存活时会读到历史遗留 DLQ 消息（新增 header 断言时暴露）。
+- **多副本 authority 回归**：新增 `TestMultiWorkerSameModeSharesGeneration` —— 两个 worker
+  同 mode 启动时第二个不 bump generation，同纪元任务任一副本可领取（P0-01 多副本安全）。
+- **运维手册**：docs/12 增《DLQ 巡检与重放》—— 查看命令、取证头、处置原则（不直接删除，
+  按 original_* 修复后受控重放）、DLQ 增长视为来源契约回归信号。
+
+### 验收
+
+- `golangci-lint run ./...`：0 issues；`go vet`：通过。
+- `go test ./...`（PG/Kafka resident deps）：全绿；DLQ 测试含 origin 头断言通过。
+- 环境注记：本轮中途 Docker daemon 退出导致 resident Kafka/PG 不可用，已 `make dev-deps`
+  重新拉起后复跑，无代码影响。

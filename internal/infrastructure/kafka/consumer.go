@@ -3,10 +3,11 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/segmentio/kafka-go"
 	"github.com/oekit/logx"
+	"github.com/segmentio/kafka-go"
 
 	"github.com/example/alert-platform/internal/application/processor"
 )
@@ -23,10 +24,10 @@ import (
 //     consumer RETURNS (fail-stop). The offset stays uncommitted, K8s
 //     restarts the pod and redelivery resumes — no unbounded uncommitted lag.
 type Consumer struct {
-	reader   *kafka.Reader
-	dlq      *kafka.Writer
-	retries  int
-	backoff  time.Duration
+	reader  *kafka.Reader
+	dlq     *kafka.Writer
+	retries int
+	backoff time.Duration
 }
 
 // NewConsumer builds a consumer-group reader for one topic. dlqTopic may be
@@ -73,7 +74,10 @@ func (c *Consumer) Run(ctx context.Context, handle func(context.Context, process
 		for _, h := range msg.Headers {
 			hdrs[h.Key] = string(h.Value)
 		}
-		in := processor.IncomingMessage{Key: string(msg.Key), Headers: hdrs, Value: msg.Value}
+		in := processor.IncomingMessage{
+			Key: string(msg.Key), Headers: hdrs, Value: msg.Value,
+			Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset,
+		}
 
 		if err := c.handleWithRetry(ctx, in, handle); err != nil {
 			if ctx.Err() != nil {
@@ -101,7 +105,7 @@ func (c *Consumer) Run(ctx context.Context, handle func(context.Context, process
 // commits).
 func (c *Consumer) handleWithRetry(ctx context.Context, in processor.IncomingMessage, handle func(context.Context, processor.IncomingMessage) error) error {
 	var lastErr error
-	for attempt := 0; attempt <= c.retries; attempt++ {
+	for attempt := 0; ; attempt++ {
 		err := handle(ctx, in)
 		if err == nil {
 			return nil
@@ -109,6 +113,11 @@ func (c *Consumer) handleWithRetry(ctx context.Context, in processor.IncomingMes
 		lastErr = err
 		if processor.IsPermanent(err) {
 			return c.quarantine(ctx, in, err)
+		}
+		if attempt >= c.retries {
+			// Exhausted: fail-stop immediately — sleeping one more backoff
+			// window would only delay the restart that resumes redelivery.
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -132,6 +141,13 @@ func (c *Consumer) quarantine(ctx context.Context, in processor.IncomingMessage,
 		headers = append(headers, kafka.Header{Key: k, Value: []byte(v)})
 	}
 	headers = append(headers, kafka.Header{Key: "dlq_error", Value: []byte(cause.Error())})
+	// Forensics: the original coordinates are NOT recoverable from the DLQ
+	// topic itself, so they ride along as headers.
+	headers = append(headers,
+		kafka.Header{Key: "original_topic", Value: []byte(in.Topic)},
+		kafka.Header{Key: "original_partition", Value: []byte(strconv.Itoa(in.Partition))},
+		kafka.Header{Key: "original_offset", Value: []byte(strconv.FormatInt(in.Offset, 10))},
+	)
 	if err := c.dlq.WriteMessages(ctx, kafka.Message{
 		Key:     []byte(in.Key),
 		Headers: headers,

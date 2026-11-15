@@ -383,3 +383,40 @@ func TestChannelRateLimit(t *testing.T) {
 		t.Fatalf("sent=%d, want 2", sender.count())
 	}
 }
+
+// P8-P0-01 多副本安全：两个 worker 以同一模式启动时，第二个的 authority
+// 同步不得 bump generation（否则第一个 worker 已领取/待领取的任务会被判为
+// 旧纪元而搁浅）；同一纪元内任务可被任一副本领取。
+func TestMultiWorkerSameModeSharesGeneration(t *testing.T) {
+	ctx := context.Background()
+	st := &modeStore{}
+	a := NewService(st, &captureSender{})
+	a.SetMode(ModeActive)
+	if err := a.InitAuthority(ctx); err != nil {
+		t.Fatal(err)
+	}
+	genAfterA := st.authGen
+
+	b := NewService(st, &captureSender{})
+	b.SetMode(ModeActive)
+	if err := b.InitAuthority(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st.authGen != genAfterA {
+		t.Fatalf("second replica bumped generation %d → %d (pending tasks would be stranded)",
+			genAfterA, st.authGen)
+	}
+
+	// 同纪元任务对两个副本都可见：A 领走一条后，B 仍能领到剩余一条。
+	st.tasks = []Task{
+		{ID: "mw-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA},
+		{ID: "mw-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA},
+	}
+	a.SetTuning(0, 0, 1) // batch=1：A 只领一条
+	if n := a.DeliverOnce(ctx); n != 1 {
+		t.Fatalf("replica A claimed %d, want 1", n)
+	}
+	if n := b.DeliverOnce(ctx); n != 1 {
+		t.Fatalf("replica B claimed %d, want 1 (same-era task must stay claimable)", n)
+	}
+}

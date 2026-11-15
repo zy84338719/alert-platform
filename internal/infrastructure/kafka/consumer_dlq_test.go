@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -20,8 +21,13 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 	brokers := testenv.StartKafka(t)
 	ctx := context.Background()
 
-	topic := "dlq-test-events"
-	dlqTopic := "dlq-test-dlq"
+	// Unique names per run: Kafka data survives container restarts, and
+	// fixed names made the DLQ assertions read stale messages from earlier
+	// runs (found by the R21 origin-header assertion).
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	topic := "dlq-test-events-" + suffix
+	dlqTopic := "dlq-test-dlq-" + suffix
+	group := "dlq-test-group-" + suffix
 	createTopic(t, brokers, topic)
 	createTopic(t, brokers, dlqTopic)
 
@@ -36,7 +42,7 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 	_ = w.Close()
 	waitForMessages(t, brokers, topic, 2)
 
-	consumer := NewConsumer(brokers, topic, "dlq-test-group", dlqTopic)
+	consumer := NewConsumer(brokers, topic, group, dlqTopic)
 	defer func() { _ = consumer.Close() }()
 
 	// Run returns on cancellation; the handler cancels once both messages
@@ -89,13 +95,27 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 		t.Fatalf("dlq payload = %q", msg.Value)
 	}
 	foundErr := false
+	origin := map[string]string{}
 	for _, h := range msg.Headers {
-		if h.Key == "dlq_error" {
+		switch h.Key {
+		case "dlq_error":
 			foundErr = true
+		case "original_topic", "original_partition", "original_offset":
+			origin[h.Key] = string(h.Value)
 		}
 	}
 	if !foundErr {
 		t.Fatal("dlq message missing dlq_error header")
+	}
+	// R21: quarantined messages carry their origin coordinates for forensics.
+	if origin["original_topic"] != topic {
+		t.Fatalf("dlq original_topic = %q, want %q", origin["original_topic"], topic)
+	}
+	if origin["original_partition"] != "0" {
+		t.Fatalf("dlq original_partition = %q, want 0", origin["original_partition"])
+	}
+	if origin["original_offset"] == "" {
+		t.Fatal("dlq message missing original_offset header")
 	}
 
 	// Offsets committed past BOTH messages (poison quarantined, not skipped
@@ -104,7 +124,7 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		resp, err := client.OffsetFetch(ctx, &kafka.OffsetFetchRequest{
-			Topics: map[string][]int{topic: {0}}, GroupID: "dlq-test-group",
+			Topics: map[string][]int{topic: {0}}, GroupID: group,
 		})
 		if err == nil && len(resp.Topics) > 0 && len(resp.Topics[topic]) > 0 {
 			if resp.Topics[topic][0].CommittedOffset >= 2 {
