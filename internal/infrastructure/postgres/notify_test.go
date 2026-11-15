@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/notify"
@@ -660,5 +661,65 @@ func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
 		if tk.ID == renewed.ID {
 			t.Fatalf("renewed task %s was re-claimed (double-page risk)", renewed.ID)
 		}
+	}
+}
+
+// P8-REG-01 失败测试：同一周期重复 Firing（稳定 observation key，如
+// Alertmanager amObservationKey）—— Receipt 去重会跳过状态机输入，
+// 但不得冻结 last_observed_at：修复前重复 Firing 只写到 receipt 即返回，
+// 持续 10 分钟 firing 的告警观察时间停留在首次，可能被 stale 对账误判。
+// 同时必须零副作用：不重复创建通知、不重复写事件历史。
+func TestRepeatFiringRefreshesObservation(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	activeAuthority(t, store)
+	now := time.Now().UTC()
+
+	ev1 := notifyEvent("reg-1", eventv1.EventSignal_EVENT_SIGNAL_FIRING, now)
+	ev1.EventKey = "ek-shared-cycle" // 一个告警周期内稳定的观察键
+	if _, err := store.ApplyEvent(ctx, ev1); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟该周期 10 分钟前已被首次观察（旧代码下 repeat firing 不会刷新）。
+	if _, err := pool.Exec(ctx, `
+		UPDATE alert_instances SET last_observed_at = now() - interval '10 minutes'`); err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now()
+	ev2 := notifyEvent("reg-2", eventv1.EventSignal_EVENT_SIGNAL_FIRING, now.Add(time.Minute))
+	ev2.EventKey = "ek-shared-cycle" // 同 observation key，新 transport id（重复投递）
+	ev2.ReceivedAt = timestamppb.New(time.Now())
+	dup, err := store.ApplyEvent(ctx, ev2)
+	if err != nil {
+		t.Fatalf("repeat firing: %v", err)
+	}
+	if !dup {
+		t.Fatal("repeat firing with the same observation key must be deduped")
+	}
+
+	var observed time.Time
+	if err := pool.QueryRow(ctx, `SELECT last_observed_at FROM alert_instances`).Scan(&observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Before(before.Add(-time.Second)) {
+		t.Fatalf("last_observed_at = %s, want a fresh timestamp (>= %s) — liveness froze on repeat firing",
+			observed.Format(time.RFC3339), before.Format(time.RFC3339))
+	}
+
+	var notifications, history int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM notification_outbox`).Scan(&notifications); err != nil {
+		t.Fatal(err)
+	}
+	if notifications != 1 {
+		t.Fatalf("notification rows = %d, want 1 (repeat firing must not page again)", notifications)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM event_history`).Scan(&history); err != nil {
+		t.Fatal(err)
+	}
+	if history != 1 {
+		t.Fatalf("event history rows = %d, want 1 (receipt dedup keeps history unique)", history)
 	}
 }

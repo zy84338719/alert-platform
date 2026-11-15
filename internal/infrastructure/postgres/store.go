@@ -95,6 +95,30 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 		return ApplyOutcome{}, fmt.Errorf("insert receipt: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		// P8-REG-01: a repeat FIRING observation deduped by a stable key
+		// (Alertmanager amObservationKey) must still refresh liveness — the
+		// receipt suppresses the state-machine input, but freezing
+		// last_observed_at would let stale-reconciliation age out an alert
+		// that is demonstrably still firing. No transition, no notification:
+		// only the observation timestamp moves.
+		if ev.GetSignal() == eventv1.EventSignal_EVENT_SIGNAL_FIRING {
+			if fp, ferr := fingerprintOf(ev); ferr == nil {
+				if _, lerr := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+					ev.GetTenantId()+"|"+fp); lerr != nil {
+					return ApplyOutcome{}, fmt.Errorf("identity lock: %w", lerr)
+				}
+				if _, uerr := tx.Exec(ctx, `
+					UPDATE alert_instances
+					SET last_observed_at = GREATEST(last_observed_at, $3), updated_at = now()
+					WHERE tenant_id=$1 AND fingerprint=$2 AND monitor_state IN ('pending','firing','stale')`,
+					ev.GetTenantId(), fp, orNow(ev.GetReceivedAt().AsTime(), time.Now)); uerr != nil {
+					return ApplyOutcome{}, fmt.Errorf("refresh duplicate observation: %w", uerr)
+				}
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return ApplyOutcome{}, fmt.Errorf("commit duplicate: %w", err)
+		}
 		return ApplyOutcome{Duplicate: true, Reason: "duplicate-observation"}, nil
 	}
 
