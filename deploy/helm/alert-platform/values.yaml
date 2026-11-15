@@ -49,14 +49,28 @@ edge:
 
 networkPolicy:
   enabled: true
-  # P1-04: per-component policies. api/worker -> kafka+pg+DNS; worker also
-  # notification channels; edge -> central api + DNS only.
+  # P1-04/P8-P1-02: per-component policies. api/worker -> kafka+pg+DNS;
+  # worker also notification channels; edge -> central api + DNS only.
   egress:
     kafkaNamespace: "infra"
     postgresNamespace: "infra"
+    # P8-P1-02: notification channels (feishu/dingtalk/webhook) are runtime-
+    # configured external URLs and standard NetworkPolicy cannot match FQDNs.
+    # The worker therefore gets PUBLIC TCP 80/443 only; in-cluster, private,
+    # link-local and metadata ranges stay denied. Set enabled=false for a
+    # fully deny-by-default policy and list endpoints in workerExtraEgress
+    # (use Cilium FQDN policies where available rather than assuming domain
+    # names work in stock Kubernetes NetworkPolicy).
+    notificationEgress:
+      enabled: true
+      ports: [80, 443]
+    # Edge -> central api: set when the center lives in ANOTHER namespace
+    # (multi-cluster / shared services). Empty = same-namespace pod only.
+    edgeCentralNamespace: ""
+    edgeCentralPort: 8080
     # Extra egress per component (deny-by-otherwise otherwise):
-    #   worker: notification channel endpoints (feishu/dingtalk/webhook) —
-    #     e.g. [{to: [{ipBlock: {cidr: "0.0.0.0/0"}, ports: [{protocol: TCP, port: 443}]}]}]
+    #   worker: additional notification endpoints when notificationEgress is
+    #     off — e.g. [{to: [{ipBlock: {cidr: "203.0.113.0/24"}}]}]
     #   edge: collector mode upstreams (e.g. the HUATUO node) — same shape.
     workerExtraEgress: []
     apiExtraEgress: []

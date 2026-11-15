@@ -8,7 +8,10 @@
   ③ worker 额外放行通知渠道外呼（values 注入 extraEgress）；
   ④ edge egress 只含 DNS + 同 ns api pod（不含 kafka/pg namespace 规则），
      默认安装下 Edge→中央 API 连通而其它外呼被拒；
-  ⑤ extraEgress 的注入逐组件生效（api 注入不影响 edge）。
+  ⑤ extraEgress 的注入逐组件生效（api 注入不影响 edge）；
+  ⑥ P8-P1-02：默认 worker 策略显式放行公网通知出口（TCP 80/443，私网/
+     链路本地/元数据段排除）；enabled=false 时完全 deny-by-default；
+  ⑦ P8-P1-02：edgeCentralNamespace 非空时 edge 放行跨 namespace 中央 API。
 """
 import subprocess
 import sys
@@ -103,6 +106,37 @@ def main():
         if "podSelector" not in edge_doc.split("egress:")[1]:
             failures.append("④ edge egress must include the same-ns api pod selector")
 
+    # ⑥ 默认安装：worker 显式放行公网通知出口（P8-P1-02）
+    worker_doc0 = next((d for n, d in by_name.items() if n.endswith("-worker-np")), None)
+    if not worker_doc0:
+        failures.append("⑥ default render missing worker NetworkPolicy")
+    else:
+        if "cidr: 0.0.0.0/0" not in worker_doc0:
+            failures.append("⑥ default worker policy must allow public notification egress (0.0.0.0/0)")
+        for cidr in ("10.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10"):
+            if cidr not in worker_doc0:
+                failures.append(f"⑥ notification egress must exclude {cidr}")
+        for port in ("port: 80", "port: 443"):
+            if port not in worker_doc0:
+                failures.append(f"⑥ notification egress missing {port}")
+
+    # ⑦ 跨 namespace 中央 API（默认关闭；显式配置才放行）
+    if edge_doc and "kubernetes.io/metadata.name: central" in edge_doc:
+        failures.append("⑦ edge must not allow a cross-namespace center by default")
+    docs_cn = render([
+        "--set", "networkPolicy.egress.edgeCentralNamespace=central",
+        "--set", "networkPolicy.egress.edgeCentralPort=8443",
+    ])
+    edge_cn = next((d for n, d in find_policies(docs_cn).items() if n.endswith("-edge-np")), None)
+    if not edge_cn or "kubernetes.io/metadata.name: central" not in edge_cn or "port: 8443" not in edge_cn:
+        failures.append("⑦ edgeCentralNamespace/edgeCentralPort not rendered into edge egress")
+
+    # ⑥b 显式关闭通知出口 -> 完全 deny-by-default
+    docs_off = render(["--set", "networkPolicy.egress.notificationEgress.enabled=false"])
+    worker_off = next((d for n, d in find_policies(docs_off).items() if n.endswith("-worker-np")), None)
+    if worker_off and "cidr: 0.0.0.0/0" in worker_off:
+        failures.append("⑥ notificationEgress.enabled=false must remove the public egress rule")
+
     # ---- values 注入 extraEgress（worker 通知渠道外呼）----
     docs2 = render([
         "--set", "networkPolicy.egress.workerExtraEgress[0].to[0].ipBlock.cidr=10.99.0.0/16",
@@ -128,7 +162,7 @@ def main():
         for f in failures:
             print("  -", f)
         sys.exit(1)
-    print("P1-04 CHART POLICY MATRIX: PASS (3 policies, per-component selectors, DNS + scoped egress, no leaks)")
+    print("P1-04/P8-P1-02 CHART POLICY MATRIX: PASS (3 policies, per-component selectors, DNS, public notification egress with private-range exclusions, cross-ns center opt-in, no leaks)")
 
 
 if __name__ == "__main__":

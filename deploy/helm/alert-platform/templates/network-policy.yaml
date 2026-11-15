@@ -77,10 +77,36 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # P1-04: notification channels (feishu/dingtalk/webhook) are OUTSIDE the
-    # cluster — a default install must not silently page nobody. Operators
-    # scope this to their channel endpoints via values (deny-by-otherwise
-    # stays intact for everything not listed).
+    # P8-P1-02: notification channels (feishu/dingtalk/webhook) are OUTSIDE
+    # the cluster and their addresses are runtime-configurable — a default
+    # install must not silently page nobody. Standard NetworkPolicy cannot
+    # whitelist FQDNs, so the worker may reach PUBLIC TCP 80/443 only; the
+    # in-cluster/private/link-local/metadata ranges stay denied. Fine-grained
+    # endpoint lists belong in workerExtraEgress (Cilium FQDN policies where
+    # available); set notificationEgress.enabled=false to stay fully
+    # deny-by-default.
+    {{- if and .Values.networkPolicy.egress.notificationEgress .Values.networkPolicy.egress.notificationEgress.enabled }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fc00::/7
+              - fe80::/10
+      ports:
+        {{- range .Values.networkPolicy.egress.notificationEgress.ports | default (list 80 443) }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    # P1-04: additional operator-scoped egress (deny-by-otherwise otherwise).
     {{- with .Values.networkPolicy.egress.workerExtraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -103,6 +129,17 @@ spec:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}
               app.kubernetes.io/component: api
+    # P8-P1-02: multi-cluster deployments keep the center in ANOTHER
+    # namespace — allow that namespace explicitly (edgeCentralNamespace).
+    {{- with .Values.networkPolicy.egress.edgeCentralNamespace }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.egress.edgeCentralPort | default 8080 }}
+    {{- end }}
     # DNS (kube-system, UDP/TCP 53).
     - to:
         - namespaceSelector:
