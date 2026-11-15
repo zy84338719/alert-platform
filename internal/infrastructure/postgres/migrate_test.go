@@ -37,15 +37,16 @@ var wantTables = []string{
 	"notification_outbox",
 	"policy_versions",
 	"silences",
-	"source_credentials", // 0002 (ING-003)
-	"notification_channels", // 0003 (NOTI-002)
-	"platform_tokens",       // 0003 (AUTH-001)
-	"edge_status",           // 0005 (MC-002)
-	"edge_leases",           // 0004 (HT-002)
-	"uid_history",           // 0006 (INC-004)
-	"event_history",         // 0007 (P0-05 事件历史)
-	"incident_escalations",  // 0006 (INC-005)
-	"notification_authority", // 0009 (P8-P0-01 通知权持久化)
+	"source_credentials",      // 0002 (ING-003)
+	"notification_channels",   // 0003 (NOTI-002)
+	"platform_tokens",         // 0003 (AUTH-001)
+	"edge_status",             // 0005 (MC-002)
+	"edge_leases",             // 0004 (HT-002)
+	"uid_history",             // 0006 (INC-004)
+	"event_history",           // 0007 (P0-05 事件历史)
+	"incident_escalations",    // 0006 (INC-005)
+	"notification_authority",  // 0009 (P8-P0-01 通知权持久化)
+	"edge_uplink_credentials", // 0010 (P8-P0-02 Edge 上行身份)
 }
 
 func absMigrations(t *testing.T) string {
@@ -85,16 +86,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 9 {
-		t.Fatalf("version after first Up = %d, want 9 (0001..0009: P8-01 notify authority)", v1)
+	if v1 != 10 {
+		t.Fatalf("version after first Up = %d, want 10 (0001..0010: P8 edge uplink identity)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 9 {
-		t.Fatalf("version after second Up = %d, want 9", v2)
+	if v2 != 10 {
+		t.Fatalf("version after second Up = %d, want 10", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the
@@ -121,6 +122,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	for _, name := range []string{
 		"0004_edge_leases.up.sql", "0005_edge_status.up.sql", "0006_identity_history.up.sql",
 		"0007_event_history.up.sql", "0008_notify_lease_fencing.up.sql", "0009_notify_authority.up.sql",
+		"0010_edge_uplink_credentials.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

@@ -68,19 +68,27 @@ type Config struct {
 	EdgeWALMaxBytes int    `yaml:"edge_wal_max_mb" env:"ALERT_EDGE_WAL_MAX_MB" default:"512"` // MiB
 	EdgeSourcesFile string `yaml:"edge_sources_file" env:"ALERT_EDGE_SOURCES_FILE" default:"etc/edge-sources.json"`
 	EdgeAPIKey      string `yaml:"edge_api_key" env:"ALERT_EDGE_API_KEY" default:""`
-	EdgeUploadRate  float64 `yaml:"edge_upload_rate" env:"ALERT_EDGE_UPLOAD_RATE" default:"20"` // uploads/sec cap
-	EdgeClientCert  string `yaml:"edge_client_cert" env:"ALERT_EDGE_CLIENT_CERT" default:""`
-	EdgeClientKey   string `yaml:"edge_client_key" env:"ALERT_EDGE_CLIENT_KEY" default:""`
-	EdgeCAFile      string `yaml:"edge_ca_file" env:"ALERT_EDGE_CA_FILE" default:""`
+	// Edge uplink identity (P8-P0-02): ONE center credential scoped to a
+	// tenant + allowed source subset. Preferred over per-source tokens.
+	EdgeUplinkToken string `yaml:"edge_uplink_token" env:"ALERT_EDGE_UPLINK_TOKEN" default:""`
+	EdgeID          string `yaml:"edge_id" env:"ALERT_EDGE_ID" default:""`
+	// EdgeSourceTokens is a JSON object {source_id: token} of per-source upload
+	// credentials for multi-source edges (legacy fallback when no uplink token).
+	// JSON string keeps YAML and env (ALERT_EDGE_SOURCE_TOKENS) symmetric.
+	EdgeSourceTokens string  `yaml:"edge_source_tokens" env:"ALERT_EDGE_SOURCE_TOKENS" default:""`
+	EdgeUploadRate   float64 `yaml:"edge_upload_rate" env:"ALERT_EDGE_UPLOAD_RATE" default:"20"` // uploads/sec cap
+	EdgeClientCert   string  `yaml:"edge_client_cert" env:"ALERT_EDGE_CLIENT_CERT" default:""`
+	EdgeClientKey    string  `yaml:"edge_client_key" env:"ALERT_EDGE_CLIENT_KEY" default:""`
+	EdgeCAFile       string  `yaml:"edge_ca_file" env:"ALERT_EDGE_CA_FILE" default:""`
 
 	// HeartbeatSourceID identifies this edge to the center waterline (MC-002).
 	HeartbeatSourceID string `yaml:"heartbeat_source_id" env:"ALERT_HEARTBEAT_SOURCE_ID" default:""`
 
 	// HUATUO collector (HT-001).
-	HuatuoSSEURL    string `yaml:"huatuo_sse_url" env:"ALERT_HUATUO_SSE_URL" default:""`
+	HuatuoSSEURL string `yaml:"huatuo_sse_url" env:"ALERT_HUATUO_SSE_URL" default:""`
 	// P0-04: official /v1/events/watch is POST + JSON body + Bearer token.
-	HuatuoToken    string `yaml:"huatuo_token" env:"ALERT_HUATUO_TOKEN" default:""`
-	HuatuoTracer   string `yaml:"huatuo_tracer_filter" env:"ALERT_HUATUO_TRACER_FILTER" default:""`
+	HuatuoToken     string `yaml:"huatuo_token" env:"ALERT_HUATUO_TOKEN" default:""`
+	HuatuoTracer    string `yaml:"huatuo_tracer_filter" env:"ALERT_HUATUO_TRACER_FILTER" default:""`
 	HuatuoTenantID  string `yaml:"huatuo_tenant_id" env:"ALERT_HUATUO_TENANT_ID" default:""`
 	HuatuoSourceID  string `yaml:"huatuo_source_id" env:"ALERT_HUATUO_SOURCE_ID" default:""`
 	HuatuoClusterID string `yaml:"huatuo_cluster_id" env:"ALERT_HUATUO_CLUSTER_ID" default:""`

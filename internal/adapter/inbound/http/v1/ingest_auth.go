@@ -23,10 +23,20 @@ import (
 // ctxKeyAuthSource stores the authenticated source inside the request context.
 const ctxKeyAuthSource = "alert.auth.source"
 
+// ctxKeyAuthEdge stores the authenticated edge uplink identity (P8-P0-02).
+const ctxKeyAuthEdge = "alert.auth.edge"
+
 // IngestAuthMiddleware authenticates the pusher via the source registry and
 // binds the resolved identity to the request. Fail-closed at every step:
 // unwired registry -> 503, missing/unknown credential -> 401 (deliberately
 // vague), disabled source -> 403.
+//
+// Two credential kinds are accepted (P8-P0-02):
+//   - X-Edge-Id present: an EDGE uplink credential — ONE token scoped to a
+//     tenant and an allowed source subset (multi-source edges, rotation via
+//     token rows);
+//   - otherwise: a per-SOURCE credential (single-source edges, external
+//     webhook push, legacy deployments).
 func IngestAuthMiddleware() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		if SourceRegistry == nil {
@@ -34,21 +44,35 @@ func IngestAuthMiddleware() app.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if edgeID := string(c.GetHeader("X-Edge-Id")); edgeID != "" {
+			ident, err := SourceRegistry.AuthenticateEdge(ctx, bearerToken(c))
+			if err != nil {
+				authFailure(ctx, c, err)
+				return
+			}
+			c.Set(ctxKeyAuthEdge, ident)
+			return
+		}
 		src, err := SourceRegistry.Authenticate(ctx, bearerToken(c))
 		if err != nil {
-			switch {
-			case err == sourcereg.ErrUnauthenticated:
-				mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
-			case err == sourcereg.ErrDisabled:
-				mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40302, 403, "source disabled"))
-			default:
-				mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50001, 500, "registry unavailable"))
-			}
-			c.Abort()
+			authFailure(ctx, c, err)
 			return
 		}
 		c.Set(ctxKeyAuthSource, src)
 	}
+}
+
+// authFailure maps registry sentinels to the fail-closed HTTP responses.
+func authFailure(ctx context.Context, c *app.RequestContext, err error) {
+	switch {
+	case err == sourcereg.ErrUnauthenticated:
+		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
+	case err == sourcereg.ErrDisabled:
+		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40302, 403, "source disabled"))
+	default:
+		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50001, 500, "registry unavailable"))
+	}
+	c.Abort()
 }
 
 // authenticatedSource returns the credential-bound identity installed by
@@ -60,6 +84,17 @@ func authenticatedSource(c *app.RequestContext) *sourcereg.Source {
 	}
 	src, _ := v.(*sourcereg.Source)
 	return src
+}
+
+// authenticatedEdge returns the edge uplink identity installed by the
+// middleware (P8-P0-02), or nil when a source credential was used.
+func authenticatedEdge(c *app.RequestContext) *sourcereg.EdgeIdentity {
+	v, ok := c.Get(ctxKeyAuthEdge)
+	if !ok {
+		return nil
+	}
+	ident, _ := v.(*sourcereg.EdgeIdentity)
+	return ident
 }
 
 // enforceIngestIdentity binds every event of the batch to the authenticated
@@ -86,6 +121,31 @@ func enforceIngestIdentity(ctx context.Context, events []*eventv1.AlertEvent, sr
 		if src.ClusterID != "" && ev.GetResource() != nil {
 			ev.Resource.ClusterId = src.ClusterID
 		}
+	}
+	return true
+}
+
+// enforceEdgeIngestIdentity binds every event to an EDGE uplink credential
+// (P8-P0-02): the batch may mix sources, but each event's source must be in
+// the credential's allowed set (enabled-filtered at resolution time) and the
+// tenant must match. A missing source id is rejected — an edge credential
+// cannot pick a source on the caller's behalf. Returns false when rejected.
+func enforceEdgeIngestIdentity(ctx context.Context, events []*eventv1.AlertEvent, ident *sourcereg.EdgeIdentity) bool {
+	for i, ev := range events {
+		if ev.GetTenantId() != "" && ev.GetTenantId() != ident.TenantID {
+			rejectIdentity(ctx, i, fmt.Sprintf("tenant %q does not match the edge credential", ev.GetTenantId()))
+			return false
+		}
+		sid := ev.GetSource().GetSourceId()
+		if sid == "" {
+			rejectIdentity(ctx, i, "event carries no source_id (edge credentials cannot infer one)")
+			return false
+		}
+		if !ident.Authorizes(sid) {
+			rejectIdentity(ctx, i, fmt.Sprintf("source %q is not in the edge credential's allowed set", sid))
+			return false
+		}
+		ev.TenantId = ident.TenantID
 	}
 	return true
 }

@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/example/alert-platform/internal/application/sourcereg"
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
+	"github.com/example/alert-platform/internal/application/sourcereg"
 )
 
 // SourceStore implements the sourcereg.Store port on the alert_sources +
@@ -171,6 +171,34 @@ func (s *SourceStore) FindByTokenHash(ctx context.Context, tokenHash string) (*s
 		WHERE c.token_hash = $1 AND c.revoked_at IS NULL
 		LIMIT 1`, tokenHash)
 	return scanSource(row)
+}
+
+// FindEdgeByTokenHash resolves an unrevoked edge uplink credential (P8-P0-02).
+// The allowed set is filtered to currently-enabled sources of the credential's
+// tenant, so disabling a source immediately revokes the edge's authority over
+// it. Unknown and revoked tokens are indistinguishable (ErrNotFound -> 401).
+func (s *SourceStore) FindEdgeByTokenHash(ctx context.Context, tokenHash string) (*sourcereg.EdgeIdentity, error) {
+	var ident sourcereg.EdgeIdentity
+	var allowed []string
+	err := s.pool.QueryRow(ctx, `
+		SELECT e.edge_id, e.tenant_id::text,
+		       COALESCE((
+		           SELECT array_agg(s.source_id::text ORDER BY s.source_id)
+		           FROM unnest(e.allowed_source_ids::text[]) AS allowed(sid)
+		           JOIN alert_sources s
+		             ON s.tenant_id = e.tenant_id AND s.source_id::text = allowed.sid AND s.enabled
+		       ), '{}')
+		FROM edge_uplink_credentials e
+		WHERE e.token_hash = $1 AND e.revoked_at IS NULL
+		LIMIT 1`, tokenHash).Scan(&ident.EdgeID, &ident.TenantID, &allowed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, sourcereg.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	ident.AllowedSourceIDs = allowed
+	return &ident, nil
 }
 
 // TouchLastSeen marks the source as recently seen (PROC-006 input).

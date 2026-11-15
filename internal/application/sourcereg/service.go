@@ -20,10 +20,10 @@ import (
 
 // Sentinel errors surfaced as HTTP error codes by the inbound adapters.
 var (
-	ErrNotFound      = errors.New("source not found")
+	ErrNotFound        = errors.New("source not found")
 	ErrUnauthenticated = errors.New("unknown or revoked credential")
-	ErrDisabled      = errors.New("source is disabled")
-	ErrConflict      = errors.New("source conflict")
+	ErrDisabled        = errors.New("source is disabled")
+	ErrConflict        = errors.New("source conflict")
 )
 
 // Source is the registry's view of one external alert source.
@@ -38,6 +38,27 @@ type Source struct {
 	Enabled        bool
 	LastSeenAt     time.Time
 	HealthStatus   string
+}
+
+// EdgeIdentity is a trusted edge uplink credential (P8-P0-02): ONE credential
+// that may upload a batch for a limited source subset of ONE tenant. It is the
+// "edge -> center" identity, deliberately separate from the per-vendor webhook
+// credentials the edge terminates. AllowedSourceIDs is filtered to sources
+// that are currently enabled at resolution time.
+type EdgeIdentity struct {
+	EdgeID           string
+	TenantID         string
+	AllowedSourceIDs []string
+}
+
+// Authorizes reports whether this edge credential may upload for sourceID.
+func (e *EdgeIdentity) Authorizes(sourceID string) bool {
+	for _, id := range e.AllowedSourceIDs {
+		if id == sourceID {
+			return true
+		}
+	}
+	return false
 }
 
 // Store is the persistence port (infrastructure/postgres implements it).
@@ -56,6 +77,10 @@ type Store interface {
 	// credential hash. This is the auth hot path; it must not filter by any
 	// tenant claim from the wire.
 	FindByTokenHash(ctx context.Context, tokenHash string) (*Source, error)
+	// FindEdgeByTokenHash resolves an unrevoked edge uplink credential (P8-P0-02).
+	// The allowed set is filtered to currently-enabled sources: disabling one
+	// source immediately removes it from the credential's authority.
+	FindEdgeByTokenHash(ctx context.Context, tokenHash string) (*EdgeIdentity, error)
 	// TouchLastSeen records that the source pushed recently (PROC-006 input).
 	TouchLastSeen(ctx context.Context, sourceID string) error
 }
@@ -148,6 +173,27 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Source, erro
 	// must not fail the push itself — health only degrades, never blocks.
 	_ = s.store.TouchLastSeen(ctx, src.SourceID)
 	return src, nil
+}
+
+// AuthenticateEdge resolves an edge uplink bearer (P8-P0-02). The returned
+// identity carries the ONE tenant and the enabled source subset it may upload
+// for; every event of a batch is validated against that set by the caller.
+// Same vague 401 for unknown/revoked credentials, same fail-closed semantics.
+func (s *Service) AuthenticateEdge(ctx context.Context, token string) (*EdgeIdentity, error) {
+	if token == "" {
+		return nil, ErrUnauthenticated
+	}
+	ident, err := s.store.FindEdgeByTokenHash(ctx, TokenHash(token))
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrUnauthenticated
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, sid := range ident.AllowedSourceIDs {
+		_ = s.store.TouchLastSeen(ctx, sid)
+	}
+	return ident, nil
 }
 
 // newToken mints "aps_<48 hex chars>" (24 random bytes).

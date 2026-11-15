@@ -9,9 +9,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/sourcereg"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 )
 
 // P0-03 (rh-p0-03) 失败测试：内部 Ingest 鉴权与租户/来源绑定。
@@ -140,5 +140,97 @@ func TestIngestAuthFailsClosedWithoutRegistry(t *testing.T) {
 	g.POST("/v1/events:batch", PushBatch)
 	if w := postIngest(t, h, "aps_any", ingestBatchBody("t", "s")); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unwired registry: status %d, want 503", w.Code)
+	}
+}
+
+// P8-P0-02 失败测试：Edge 上行身份（多来源 Edge）——
+// 一个 edge 凭证按 tenant + allowed_source_ids 授权，batch 可混合多个来源；
+// 越权来源/跨租户/缺 source_id 一律 403，未知凭证 401。
+// 修复前：中央只认 per-source 凭证，一个 Edge 接入 DeepFlow+Alertmanager
+// 时要么拿某来源 token（其他来源 401），要么拿共享 key（全部 401）。
+func TestIngestEdgeUplinkMatrix(t *testing.T) {
+	reg := &fakeRegistry{token: "aps_src-cred", edgeToken: "aps_edge-uplink"}
+	reg.source = &sourcereg.Source{
+		SourceID: "src-df", TenantID: "tenant-edge", ClusterID: "cluster-edge",
+		SourceType: eventv1.SourceType_SOURCE_TYPE_DEEPFLOW, Enabled: true,
+	}
+	reg.edge = &sourcereg.EdgeIdentity{
+		EdgeID: "edge-01", TenantID: "tenant-edge",
+		AllowedSourceIDs: []string{"src-df", "src-am"},
+	}
+	SetSourceRegistry(sourcereg.NewService(reg))
+	pub := &capturePublisher{}
+	SetIngest(ingest.NewService(pub))
+	defer func() { SetSourceRegistry(nil); SetIngest(nil) }()
+	h := server.Default(server.WithHostPorts(":0"))
+	g := h.Group("/ingest", IngestAuthMiddleware())
+	g.POST("/v1/events:batch", PushBatch)
+
+	postEdge := func(t *testing.T, edgeID, token, body string) *ut.ResponseRecorder {
+		t.Helper()
+		hdr := []ut.Header{{Key: "Content-Type", Value: "application/json"}}
+		if edgeID != "" {
+			hdr = append(hdr, ut.Header{Key: "X-Edge-Id", Value: edgeID})
+		}
+		if token != "" {
+			hdr = append(hdr, ut.Header{Key: "Authorization", Value: "Bearer " + token})
+		}
+		return ut.PerformRequest(h.Engine, http.MethodPost, "/ingest/v1/events:batch",
+			&ut.Body{Body: strings.NewReader(body), Len: len(body)}, hdr...)
+	}
+	twoSources := func(tenant string) string {
+		ev := func(src string) map[string]any {
+			e := map[string]any{
+				"kind": 1, "signal": 1, "severity": 1, "alert_name": "A-" + src,
+				"event_key": "ek-" + src, "resource": map[string]any{"resource_type": "pod", "resource_uid": "p-" + src},
+			}
+			if tenant != "" {
+				e["tenant_id"] = tenant
+			}
+			e["source"] = map[string]any{"source_id": src}
+			return e
+		}
+		body, _ := json.Marshal(map[string]any{"batch_id": "b-edge", "events": []any{ev("src-df"), ev("src-am")}})
+		return string(body)
+	}
+
+	// ① 一个 edge 凭证混合上传两个来源 -> 202；tenant 取凭证，来源保留。
+	if w := postEdge(t, "edge-01", "aps_edge-uplink", twoSources("tenant-edge")); w.Code != http.StatusAccepted {
+		t.Fatalf("multi-source edge push: status %d body %s, want 202", w.Code, w.Body.String())
+	}
+	pub.mu.Lock()
+	if len(pub.events) != 2 {
+		pub.mu.Unlock()
+		t.Fatalf("published %d, want 2", len(pub.events))
+	}
+	if pub.events[0].GetSource().GetSourceId() != "src-df" || pub.events[1].GetSource().GetSourceId() != "src-am" {
+		pub.mu.Unlock()
+		t.Fatalf("sources mutated: %q/%q", pub.events[0].GetSource().GetSourceId(), pub.events[1].GetSource().GetSourceId())
+	}
+	if pub.events[0].GetTenantId() != "tenant-edge" {
+		pub.mu.Unlock()
+		t.Fatalf("tenant = %q, want tenant-edge", pub.events[0].GetTenantId())
+	}
+	pub.mu.Unlock()
+
+	// ② 非 allowed 来源 -> 403
+	if w := postEdge(t, "edge-01", "aps_edge-uplink", ingestBatchBody("tenant-edge", "src-other")); w.Code != http.StatusForbidden {
+		t.Fatalf("source outside allowed set: status %d, want 403", w.Code)
+	}
+	// ③ 跨租户伪造 -> 403
+	if w := postEdge(t, "edge-01", "aps_edge-uplink", ingestBatchBody("tenant-other", "src-df")); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-tenant forgery: status %d, want 403", w.Code)
+	}
+	// ④ 缺 source_id（edge 不能替调用方选择来源）-> 403
+	if w := postEdge(t, "edge-01", "aps_edge-uplink", ingestBatchBody("tenant-edge", "")); w.Code != http.StatusForbidden {
+		t.Fatalf("edge push without source_id: status %d, want 403", w.Code)
+	}
+	// ⑤ 未知/吊销 edge 凭证 -> 401
+	if w := postEdge(t, "edge-01", "aps_revoked", ingestBatchBody("tenant-edge", "src-df")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown edge credential: status %d, want 401", w.Code)
+	}
+	// ⑥ edge token 但无 X-Edge-Id（走 per-source 路径）-> 401
+	if w := postEdge(t, "", "aps_edge-uplink", ingestBatchBody("tenant-edge", "src-df")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("edge token without X-Edge-Id: status %d, want 401", w.Code)
 	}
 }

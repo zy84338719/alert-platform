@@ -287,3 +287,81 @@ func TestUploaderRateCap(t *testing.T) {
 	}
 	t.Fatal("uploads never drained")
 }
+
+// P8-P0-02 失败测试：多来源 Edge 上行凭证选择与头部。
+// 修复前 main 未把 SourceTokens 接入 UploaderConfig（per-source 凭证永远为空），
+// 且没有 edge 级身份；这里锁定：①edge uplink token 优先且携带 X-Edge-Id；
+// ②per-source token 按记录来源选择；③兜底共享 edge key。
+func TestUploaderUplinkCredentialSelection(t *testing.T) {
+	type seen struct {
+		auth   string
+		edgeID string
+	}
+	var mu sync.Mutex
+	var got []seen
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, seen{auth: r.Header.Get("Authorization"), edgeID: r.Header.Get("X-Edge-Id")})
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	recs := []Record{
+		{ID: "b1", Body: []byte(`{}`), Seq: 1, SourceID: "src-df"},
+		{ID: "b2", Body: []byte(`{}`), Seq: 2, SourceID: "src-am"},
+		{ID: "b3", Body: []byte(`{}`), Seq: 3, SourceID: "src-unlisted"},
+	}
+
+	// ① edge uplink token：一个身份覆盖全部来源，X-Edge-Id 必带。
+	w := &memWAL{recs: append([]Record(nil), recs...)}
+	u, err := NewUploader(w, UploaderConfig{
+		Endpoint:     srv.URL,
+		EdgeKey:      "aps_shared",
+		UplinkToken:  "aps_edge-uplink",
+		EdgeID:       "edge-01",
+		SourceTokens: map[string]string{"src-df": "aps_df", "src-am": "aps_am"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.DrainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(got) != 3 {
+		mu.Unlock()
+		t.Fatalf("requests = %d, want 3", len(got))
+	}
+	for i, s := range got {
+		if s.auth != "Bearer aps_edge-uplink" || s.edgeID != "edge-01" {
+			mu.Unlock()
+			t.Fatalf("request %d: auth=%q edge-id=%q, want uplink token + edge-01", i, s.auth, s.edgeID)
+		}
+	}
+	got = nil
+	mu.Unlock()
+
+	// ② 无 uplink token：per-source token 按记录来源选择（多来源 Edge 的核心场景）。
+	w = &memWAL{recs: append([]Record(nil), recs...)}
+	u, err = NewUploader(w, UploaderConfig{
+		Endpoint:     srv.URL,
+		EdgeKey:      "aps_shared",
+		SourceTokens: map[string]string{"src-df": "aps_df", "src-am": "aps_am"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.DrainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	want := []string{"Bearer aps_df", "Bearer aps_am", "Bearer aps_shared"}
+	for i, s := range got {
+		if s.auth != want[i] || s.edgeID != "" {
+			mu.Unlock()
+			t.Fatalf("request %d: auth=%q edge-id=%q, want %q and no edge id", i, s.auth, s.edgeID, want[i])
+		}
+	}
+	mu.Unlock()
+}

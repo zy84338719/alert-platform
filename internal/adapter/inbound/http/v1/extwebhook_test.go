@@ -12,17 +12,19 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/sourcereg"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 )
 
 // fakeRegistry is an in-memory sourcereg.Store for handler-level tests.
 type fakeRegistry struct {
-	mu     sync.Mutex
-	source *sourcereg.Source
-	token  string
-	touch  int
+	mu        sync.Mutex
+	source    *sourcereg.Source
+	token     string
+	touch     int
+	edge      *sourcereg.EdgeIdentity
+	edgeToken string
 }
 
 func (f *fakeRegistry) CreateSource(_ context.Context, src *sourcereg.Source, _ string) error {
@@ -59,6 +61,16 @@ func (f *fakeRegistry) TouchLastSeen(_ context.Context, _ string) error {
 	defer f.mu.Unlock()
 	f.touch++
 	return nil
+}
+
+// FindEdgeByTokenHash mirrors the real store: unknown/revoked -> ErrNotFound.
+func (f *fakeRegistry) FindEdgeByTokenHash(_ context.Context, tokenHash string) (*sourcereg.EdgeIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.edge != nil && tokenHash == sourcereg.TokenHash(f.edgeToken) {
+		return f.edge, nil
+	}
+	return nil, sourcereg.ErrNotFound
 }
 
 // capturePublisher records every published canonical event.

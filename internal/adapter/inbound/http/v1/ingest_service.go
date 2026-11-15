@@ -35,18 +35,26 @@ func PushBatch(ctx context.Context, c *app.RequestContext) {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50300, 503, "ingest service not wired"))
 		return
 	}
-	// P0-03: the pusher identity is the credential-bound one — never the
+	// P0-03/P8-P0-02: the pusher identity is the credential-bound one — never the
 	// payload's self-declared tenant/source (forgery rejects with 403,
-	// absent identity fills from the credential).
+	// absent identity fills from the credential). Two credential kinds: a
+	// per-source token or an edge uplink token scoped to an allowed source set.
 	src := authenticatedSource(c)
-	if src == nil {
+	ident := authenticatedEdge(c)
+	if src == nil && ident == nil {
 		// middleware bypassed (mis-wired route): fail closed, never anonymous
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
 		return
 	}
-	if !enforceIngestIdentity(ctx, req.GetEvents(), src) {
+	ok := false
+	if src != nil {
+		ok = enforceIngestIdentity(ctx, req.GetEvents(), src)
+	} else {
+		ok = enforceEdgeIngestIdentity(ctx, req.GetEvents(), ident)
+	}
+	if !ok {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40304, 403,
-			"event identity does not match the authenticated source"))
+			"event identity does not match the authenticated credential"))
 		return
 	}
 

@@ -318,11 +318,13 @@ func TestAuditSanitization(t *testing.T) {
 }
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
-func containsStr(s, sub string) bool { return strings.Contains(s, sub) }
+func containsStr(s, sub string) bool      { return strings.Contains(s, sub) }
 
 // P0-06 (rh-p0-06) 失败测试：发送前静默复核矩阵 ——
 // ① 两条规则：第一条不匹配、第二条匹配 → 必须抑制（修复前 LIMIT 1 只看第一条，
-//    漏抑制 → 通知静默失效）；
+//
+//	漏抑制 → 通知静默失效）；
+//
 // ② 尚未开始的规则 → 不抑制（修复前 SQL 只查 ends_at > now()，未来静默被当有效）；
 // ③ 已结束的规则 → 不抑制；边界时间规则 → 抑制。
 func TestSuppressNotifyAtSendMultiRuleMatrix(t *testing.T) {
@@ -424,7 +426,9 @@ func TestSuppressNotifyAtSendMultiRuleMatrix(t *testing.T) {
 
 // P8-P0-01：真实 PG 上的 generation 隔离 ——
 // ① 首次初始化强制开启新 generation（迁移种子 gen1 → sync 后 gen2），
-//    迁移前（gen0）任务永不被领取（保守：不冒险补发 shadow 历史）；
+//
+//	迁移前（gen0）任务永不被领取（保守：不冒险补发 shadow 历史）；
+//
 // ② 每次模式切换 generation+1，旧 generation 的 pending 任务不再可领；
 // ③ 任务入队时 stamp 当前 generation（enqueue 与 authority 同源）。
 func TestClaimNotifyTasksGenerationIsolation(t *testing.T) {

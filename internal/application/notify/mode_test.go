@@ -14,10 +14,10 @@ type modeStore struct {
 }
 
 type Finish struct {
-	ID         string
-	Sent       bool
-	Failure    string
-	AttemptNo  int
+	ID        string
+	Sent      bool
+	Failure   string
+	AttemptNo int
 }
 
 // mode drill (REL-001): active delivers; shadow records suppressed attempts

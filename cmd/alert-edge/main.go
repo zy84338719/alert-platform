@@ -76,9 +76,22 @@ func main() {
 			}
 		}()
 
+		// P8-P0-02: multi-source uplink identity. EdgeUplinkToken is the preferred
+		// single credential (center authorizes tenant + allowed_source_ids);
+		// EdgeSourceTokens (JSON {source_id: token}) keeps legacy per-source
+		// edges working. Both are wired here — earlier the uploader supported
+		// SourceTokens but main never passed them, so a DeepFlow + Alertmanager
+		// edge could not present credentials per source (401 on every upload).
+		sourceTokens, err := parseSourceTokens(cfg.EdgeSourceTokens)
+		if err != nil {
+			return fmt.Errorf("ALERT_EDGE_SOURCE_TOKENS: %w", err)
+		}
 		uploader, err := edge.NewUploader(log, edge.UploaderConfig{
 			Endpoint:          cfg.APIOrigin + "/ingest/v1/events:batch",
-			EdgeKey:           cfg.EdgeAPIKey, // P0-03: uploads send this as the bearer credential; multi-source edges add per-source SourceTokens
+			EdgeKey:           cfg.EdgeAPIKey,
+			UplinkToken:       cfg.EdgeUplinkToken,
+			EdgeID:            cfg.EdgeID,
+			SourceTokens:      sourceTokens,
 			RatePerSec:        cfg.EdgeUploadRate,
 			ClientCertFile:    cfg.EdgeClientCert,
 			ClientKeyFile:     cfg.EdgeClientKey,
@@ -152,3 +165,18 @@ func (a *streamAdapter) Run(ctx context.Context, handle func(collector.Event) er
 }
 
 func (a *streamAdapter) LastID() string { return a.c.LastID() }
+
+// parseSourceTokens decodes the per-source upload credential map (P8-P0-02).
+// Empty configuration is valid (nil map: single-source or edge-uplink
+// deployments). Malformed JSON fails the process — a partial credential map
+// would silently 401 some sources.
+func parseSourceTokens(raw string) (map[string]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("must be a JSON object {source_id: token}: %w", err)
+	}
+	return m, nil
+}

@@ -43,6 +43,8 @@ type Uploader struct {
 	batch        int
 	rateEvery    time.Duration     // min spacing between uploads (rate cap)
 	edgeKey      string            // default upload credential + heartbeat key
+	uplinkToken  string            // edge uplink identity (P8-P0-02), preferred
+	edgeID       string            // exported in X-Edge-Id when uplink identity is used
 	sourceTokens map[string]string // per-source upload credentials (P0-03)
 
 	// Heartbeat (MC-002): report the WAL waterline to the center every minute.
@@ -60,6 +62,12 @@ type UploaderConfig struct {
 	// the Authorization bearer — the server binds the payload identity to the
 	// credential; X-Edge-Key stays heartbeat-only).
 	EdgeKey string
+	// UplinkToken (P8-P0-02) is the edge-level upload credential: ONE token
+	// authorized for a tenant and an allowed source subset on the center. It
+	// takes precedence over SourceTokens/EdgeKey for uploads; EdgeID identifies
+	// the credential in the X-Edge-Id header.
+	UplinkToken string
+	EdgeID      string
 	// SourceTokens overrides the bearer per buffered source id
 	// (multi-source edges: one credential per vendor source). Missing entries
 	// fall back to EdgeKey.
@@ -110,6 +118,7 @@ func NewUploader(w WAL, cfg UploaderConfig) (*Uploader, error) {
 	}
 	u := &Uploader{
 		wal: w, endpoint: cfg.Endpoint, batch: batch, rateEvery: every, edgeKey: cfg.EdgeKey,
+		uplinkToken: cfg.UplinkToken, edgeID: cfg.EdgeID,
 		sourceTokens: cfg.SourceTokens,
 		client:       &http.Client{Timeout: 15 * time.Second, Transport: transport},
 	}
@@ -193,9 +202,16 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 			return sent, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		// P0-03: the center authenticates the upload credential and binds the
-		// payload identity to it — send the credential matching this record's
-		// source (fallback: the shared edge key).
+		// P0-03/P8-P0-02: the center authenticates the upload credential and
+		// binds the payload identity to it. Credential preference:
+		//   1) edge uplink token (one identity scoped to allowed sources);
+		//   2) per-source token (multi-source edge, legacy);
+		//   3) shared edge key (single-source fallback).
+		// The edge identity travels in X-Edge-Id so the center picks the edge
+		// auth path deterministically.
+		if u.edgeID != "" {
+			req.Header.Set("X-Edge-Id", u.edgeID)
+		}
 		if tok := u.tokenFor(rec.SourceID); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
@@ -230,7 +246,12 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 }
 
 // tokenFor resolves the upload credential for one buffered source.
+// P8-P0-02: an edge uplink token (single identity scoped to an allowed source
+// set) wins over per-source tokens and the shared edge key.
 func (u *Uploader) tokenFor(sourceID string) string {
+	if u.uplinkToken != "" {
+		return u.uplinkToken
+	}
 	if sourceID != "" {
 		if tok, ok := u.sourceTokens[sourceID]; ok && tok != "" {
 			return tok

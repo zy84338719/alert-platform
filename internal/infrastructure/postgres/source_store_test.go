@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/example/alert-platform/internal/application/sourcereg"
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
+	"github.com/example/alert-platform/internal/application/sourcereg"
 	"github.com/example/alert-platform/internal/infrastructure/testenv"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -115,4 +115,91 @@ func mustToken(t *testing.T, svc *sourcereg.Service, tenant string) (token, sour
 		t.Fatalf("mint token: %v", err)
 	}
 	return token, src.SourceID
+}
+
+// P8-P0-02 失败测试（真实 PG）：Edge 上行凭证 —— 一个 edge 身份可覆盖多个
+// 来源（DeepFlow + Alertmanager），allowed 集随来源禁用即时收缩，吊销后
+// 401；轮换（新 token 行 + 旧行 revoked）后新 token 生效、旧 token 失效。
+func TestEdgeUplinkCredentialStore(t *testing.T) {
+	dsn := testenv.StartPostgres(t)
+	if _, err := Up(dsn, absMigrations(t)); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	store := NewSourceStore(pool)
+	svc := sourcereg.NewService(store)
+
+	const tenant = "aaaaaaaa-0000-0000-0000-0000000000e1"
+	df, _, err := svc.Create(ctx, &sourcereg.Source{
+		TenantID: tenant, Name: "df-edge", SourceType: eventv1.SourceType_SOURCE_TYPE_DEEPFLOW, ClusterID: "c1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	am, _, err := svc.Create(ctx, &sourcereg.Source{
+		TenantID: tenant, Name: "am-edge", SourceType: eventv1.SourceType_SOURCE_TYPE_ALERTMANAGER, ClusterID: "c1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const uplink = "aps_edge-uplink-1"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO edge_uplink_credentials (edge_id, tenant_id, token_hash, allowed_source_ids)
+		VALUES ('edge-01', $1, $2, ARRAY[$3,$4]::uuid[])`,
+		tenant, sourcereg.TokenHash(uplink), df.SourceID, am.SourceID); err != nil {
+		t.Fatalf("insert edge credential: %v", err)
+	}
+
+	ident, err := svc.AuthenticateEdge(ctx, uplink)
+	if err != nil {
+		t.Fatalf("authenticate edge: %v", err)
+	}
+	if ident.EdgeID != "edge-01" || ident.TenantID != tenant || len(ident.AllowedSourceIDs) != 2 {
+		t.Fatalf("edge identity = %+v", ident)
+	}
+	if !ident.Authorizes(df.SourceID) || !ident.Authorizes(am.SourceID) {
+		t.Fatalf("allowed set must cover both sources: %v", ident.AllowedSourceIDs)
+	}
+
+	// 禁用 Alertmanager 来源：allowed 集立刻收缩（不能再替它上传）。
+	if _, err := svc.SetEnabled(ctx, tenant, am.SourceID, false); err != nil {
+		t.Fatal(err)
+	}
+	ident, err = svc.AuthenticateEdge(ctx, uplink)
+	if err != nil {
+		t.Fatalf("authenticate after disable: %v", err)
+	}
+	if ident.Authorizes(am.SourceID) || !ident.Authorizes(df.SourceID) {
+		t.Fatalf("disabled source still authorized: %v", ident.AllowedSourceIDs)
+	}
+
+	// 轮换：先加新 token，再吊销旧 token —— 新 token 生效、旧 token 401。
+	const rotated = "aps_edge-uplink-2"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO edge_uplink_credentials (edge_id, tenant_id, token_hash, allowed_source_ids)
+		VALUES ('edge-01', $1, $2, ARRAY[$3]::uuid[])`,
+		tenant, sourcereg.TokenHash(rotated), df.SourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE edge_uplink_credentials SET revoked_at=now()
+		WHERE edge_id='edge-01' AND token_hash=$1`, sourcereg.TokenHash(uplink)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AuthenticateEdge(ctx, uplink); err != sourcereg.ErrUnauthenticated {
+		t.Fatalf("revoked edge token: want ErrUnauthenticated, got %v", err)
+	}
+	ident, err = svc.AuthenticateEdge(ctx, rotated)
+	if err != nil {
+		t.Fatalf("rotated token: %v", err)
+	}
+	if ident.EdgeID != "edge-01" || !ident.Authorizes(df.SourceID) || ident.Authorizes(am.SourceID) {
+		t.Fatalf("rotated identity = %+v", ident)
+	}
 }

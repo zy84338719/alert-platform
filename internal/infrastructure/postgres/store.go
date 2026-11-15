@@ -3,10 +3,10 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"strconv"
-	"strings"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/application/correlation"
 	"github.com/example/alert-platform/internal/application/escalation"
 	"github.com/example/alert-platform/internal/application/health"
@@ -22,7 +23,6 @@ import (
 	"github.com/example/alert-platform/internal/application/relay"
 	"github.com/example/alert-platform/internal/application/routing"
 	domainalert "github.com/example/alert-platform/internal/domain/alert"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 )
 
 // Store implements the application/processor.Store port on top of pgx: one
@@ -693,8 +693,8 @@ func (s *Store) enqueueNotifications(ctx context.Context, tx pgx.Tx, ev *eventv1
 			return err
 		}
 		if err := json.Unmarshal(spec, &struct {
-			Priority  *int32             `json:"priority"`
-			Matchers  *[]routing.Matcher `json:"matchers"`
+			Priority  *int32              `json:"priority"`
+			Matchers  *[]routing.Matcher  `json:"matchers"`
 			Receivers *[]routing.Receiver `json:"receivers"`
 		}{&r.Priority, &r.Matchers, &r.Receivers}); err != nil {
 			rows.Close()
@@ -758,13 +758,13 @@ func (s *Store) enqueueNotifications(ctx context.Context, tx pgx.Tx, ev *eventv1
 		key := routing.IdempotencyKey("alert_instance", instanceID, notificationType,
 			rcv.ChannelID, rcv.ReceiverID, 0, transitionID)
 		payload, _ := json.Marshal(map[string]any{
-			"message":         msg,
+			"message":           msg,
 			"notification_type": notificationType,
-			"silenced_by":     dec.SilencedBy,
-			"alert_name":      ev.GetAlertName(),
-			"severity":        severityOr(ev, "warning"),
-			"labels":          labels,
-			"policy_version":  dec.PolicyVersion,
+			"silenced_by":       dec.SilencedBy,
+			"alert_name":        ev.GetAlertName(),
+			"severity":          severityOr(ev, "warning"),
+			"labels":            labels,
+			"policy_version":    dec.PolicyVersion,
 		})
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO notification_outbox
