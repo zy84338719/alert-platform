@@ -73,6 +73,24 @@ func New(stream Stream, buf Buffer, cfg Config) *Service {
 func (s *Service) Run(ctx context.Context) error {
 	logx.CtxInfo(ctx, "huatuo collector started",
 		"source", s.cfg.SourceID, "threshold", s.cfg.PromoteThreshold, "window", s.cfg.PromoteWindow.String())
+	// P8-P1-06: periodic sweep of the occurrence aggregator. Observe only
+	// cleans the key it touches; keys that stop appearing (rotated container
+	// ids, decommissioned nodes) would otherwise stay in memory forever.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if evicted := s.agg.Prune(time.Now()); evicted > 0 {
+					logx.CtxInfo(ctx, "occurrence aggregator pruned",
+						"source", s.cfg.SourceID, "evicted", evicted, "keys", s.agg.Len())
+				}
+			}
+		}
+	}()
 	return s.stream.Run(ctx, s.handle)
 }
 
