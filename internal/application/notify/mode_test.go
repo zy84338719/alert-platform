@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -245,5 +246,36 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 	svc2.DeliverOnce(ctx)
 	if sender2.sent != 1 {
 		t.Fatalf("fresh task after restart: sent=%d, want 1", sender2.sent)
+	}
+}
+
+// silenceErrStore simulates the silence re-check hitting a DB error.
+type silenceErrStore struct{ *modeStore }
+
+func (s *silenceErrStore) SuppressNotifyAtSend(context.Context, string, map[string]string) (bool, error) {
+	return false, errors.New("pg unavailable")
+}
+
+// P8-P1-03 失败测试：静默复核失败必须 fail-closed ——
+// 修复前 DB 错误只记日志然后照常 Send（静默被绕过，通知在系统降级时外发）。
+// 修复后：不发送、任务以 retryable 重新调度；是否允许紧急绕过必须是显式策略，
+// 不能由数据库异常自动决定。
+func TestSilenceCheckFailureDoesNotSend(t *testing.T) {
+	ms := &modeStore{}
+	st := &silenceErrStore{modeStore: ms}
+	sender := &captureSender{}
+	svc := NewService(st, sender) // 默认 active
+	ms.tasks = []Task{{ID: "s1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+
+	svc.DeliverOnce(context.Background())
+	if sender.sent != 0 {
+		t.Fatalf("silence check failure sent %d notifications, want 0 (fail-closed)", sender.sent)
+	}
+	if len(ms.finished) != 1 {
+		t.Fatalf("finished = %+v, want one retryable outcome", ms.finished)
+	}
+	f := ms.finished[0]
+	if f.Sent || f.Failure != "retryable" || f.ID != "s1" {
+		t.Fatalf("outcome = %+v, want not-sent retryable for s1", f)
 	}
 }

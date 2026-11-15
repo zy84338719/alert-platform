@@ -265,7 +265,18 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 	}
 	_ = json.Unmarshal(t.Payload, &p)
 	if suppressed, err := s.store.SuppressNotifyAtSend(ctx, t.ID, p.Labels); err != nil {
-		logx.CtxError(ctx, "silence re-check failed", logx.ErrKey, err, "task", t.ID)
+		// P8-P1-03: silences are a hard constraint. When the re-check cannot
+		// be evaluated (DB error) the task is rescheduled as retryable —
+		// defaulting to "send" would bypass suppression exactly when the
+		// system is degraded. An emergency override must be an explicit
+		// policy decision, never an automatic fallback.
+		logx.CtxError(ctx, "silence re-check failed; delivery deferred (fail-closed)",
+			logx.ErrKey, err, "task", t.ID)
+		if ferr := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, false, 0, t.Attempts, 0, "retryable",
+			"silence re-check failed: "+err.Error()); ferr != nil {
+			logx.CtxError(ctx, "notify finish failed after silence error", logx.ErrKey, ferr, "task", t.ID)
+		}
+		return
 	} else if suppressed {
 		logx.CtxInfo(ctx, "notification suppressed by silence at send time", "task", t.ID)
 		return
