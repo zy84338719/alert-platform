@@ -140,6 +140,8 @@ func (s *Service) RunOnce(ctx context.Context) (int, error) {
 			return total, err
 		}
 		writtenTotal.Add(float64(len(rows)))
+		logx.CtxInfo(ctx, "transition archive batch written", "rows", len(rows),
+			"last_at", last.At.UTC().Format(time.RFC3339))
 		total += len(rows)
 		if age := s.now().Sub(last.At).Seconds(); age >= 0 {
 			lagSeconds.Set(age)

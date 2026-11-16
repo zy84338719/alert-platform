@@ -894,3 +894,26 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
 
 - P9-CH-01 真实 ClickHouse 写入/查询验收（INC-007，需 CH 集群）。
 - P9-INT-01 真实集成（DeepFlow/HUATUO/通知沙箱/四集群/长时压测）——唯一发布门槛（BLOCKED）。
+
+---
+
+## 2026-11-17 · R25：ClickHouse 真实 E2E drill（并修复 1970 时间戳 P0）
+
+### 交付
+
+- **`scripts/drill_ch_archive.sh`**：真实 ClickHouse 24.8 容器 + 真实 PG/Kafka + 真实 api/worker，
+  一次性库/主题/CH database，自动清理；覆盖 `ALERT_CLICKHOUSE_*` 与 `ALERT_HISTORY_PG_WINDOW`。
+  结果：`PG=2 CH=2`，history API `archived=true` 返回 firing/resolved 两条——全链路 PASS。
+- **修复 P0（drill 发现）**：`(*timestamppb.Timestamp)(nil).AsTime()` 返回 1970（非零），
+  旧实现把缺失的 occurred_at/received_at 当作已知 → transition/instance/event_history 写 1970；
+  ClickHouse 197001 分区被 TTL 立即删除（"归档成功但查不到"）。修复：`store.go` 新增
+  `eventTime()`（nil/epoch-zero → 零值），全部事件时间入口替换；回归测试
+  `TestMissingEventTimestampsFallBackToNow`。
+- **DDL TTL 修正**：24.8 拒绝 DateTime64 作 TTL → `toDateTime(transition_at) + INTERVAL 365 DAY`。
+- **配置**：新增 `ALERT_HISTORY_PG_WINDOW`（默认 168h），PG/CH 读路由边界可调。
+- 证据：`docs/evidence/P9-ch-archive-drill-2026-11-17.md`；docs/05/12 同步。
+
+### 验收
+
+- `golangci-lint` 0 issues；`go test ./...` 全绿。
+- drill PASS（真实 CH 引擎；生产 CH 集群/HA 仍挂 INC-007）。

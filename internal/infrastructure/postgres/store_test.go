@@ -537,3 +537,37 @@ func TestConcurrentFiringSameFingerprintSingleEpisode(t *testing.T) {
 		t.Fatal("second ACTIVE row for the same fingerprint was accepted (partial unique index missing)")
 	}
 }
+
+// R25 失败测试：canonical event 的 protobuf 时间戳缺失时不得写 1970。
+// (*Timestamp)(nil).AsTime() 返回 1970（非零），旧实现把"缺失"当"已知"，
+// transition/instance/event_history 全部落 1970 分区（ClickHouse 归档随即
+// 被 TTL 删除——由 P9 CH drill 发现）。
+func TestMissingEventTimestampsFallBackToNow(t *testing.T) {
+	store, pool := newStoreTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+
+	ev := canonical("ts-missing-1", at)
+	ev.OccurredAt = nil
+	ev.ReceivedAt = nil
+	ev.StartsAt = nil
+	ev.EndsAt = nil
+	if _, err := store.ApplyEvent(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	var transitionAt, startsAt, observed time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT t.transition_at, i.starts_at, i.last_observed_at
+		FROM alert_transitions t JOIN alert_instances i ON i.id = t.alert_instance_id`).
+		Scan(&transitionAt, &startsAt, &observed); err != nil {
+		t.Fatal(err)
+	}
+	for name, ts := range map[string]time.Time{
+		"transition_at": transitionAt, "starts_at": startsAt, "last_observed_at": observed,
+	} {
+		if ts.Year() < 2026 {
+			t.Fatalf("%s = %s (epoch fallback missing; want current time)", name, ts.Format(time.RFC3339))
+		}
+	}
+}

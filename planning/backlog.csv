@@ -115,3 +115,4 @@ P9-007,P9,W24,P1,Frontend,5,产品内指标中心,数据源评审+GET /metrics/v
 P9-008,P9,W25,P2,Backend-Integration,5,ClickHouse 归档,CH Writer+DDL+查询路由（无 CH 时关闭）,接口单测+INC-007 实跑,,DONE
 P9-009,P9,W23,P0,QA,5,真实集成发布门槛,DeepFlow/HUATUO/沙箱/四集群/CH/长时压测,真实环境 E2E 报告,ARC-002,BLOCKED
 P9-010,P9,W23,P1,SRE,1,P9 集群验收,REVISION 5-7 部署/迁移 12/指标暴露/真实 Prometheus 抓取/指标中心真实查询,目标 up+真实序列+截图 docs/evidence/P9-cluster-verification-2026-11-16.md,P9-001,DONE
+P9-011,P9,W23,P0,QA,2,ClickHouse 归档真实 E2E drill,真实 CH 24.8 容器+PG/Kafka+api/worker 全链路；修复 1970 时间戳与 DDL TTL,scripts/drill_ch_archive.sh PASS（PG=2 CH=2 archived=true）,P9-008,DONE

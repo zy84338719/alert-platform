@@ -16,4 +16,4 @@ CREATE TABLE IF NOT EXISTS alert_transitions
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(transition_at)
 ORDER BY (tenant_id, transition_at, transition_id)
-TTL transition_at + INTERVAL 365 DAY;
+TTL toDateTime(transition_at) + INTERVAL 365 DAY;

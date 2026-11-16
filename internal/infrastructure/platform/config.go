@@ -68,6 +68,9 @@ type Config struct {
 	ClickhouseDB       string `yaml:"clickhouse_db" env:"ALERT_CLICKHOUSE_DB" default:"default"`
 	ClickhouseUser     string `yaml:"clickhouse_user" env:"ALERT_CLICKHOUSE_USER" default:""`
 	ClickhousePassword string `yaml:"clickhouse_password" env:"ALERT_CLICKHOUSE_PASSWORD" default:""`
+	// HistoryPGWindow is how far back PG answers history reads before routing
+	// to the ClickHouse archive (docs/05; default 168h = PG retention window).
+	HistoryPGWindow string `yaml:"history_pg_window" env:"ALERT_HISTORY_PG_WINDOW" default:"168h"`
 
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.

@@ -23,6 +23,7 @@ import (
 	"github.com/example/alert-platform/internal/application/relay"
 	"github.com/example/alert-platform/internal/application/routing"
 	domainalert "github.com/example/alert-platform/internal/domain/alert"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Store implements the application/processor.Store port on top of pgx: one
@@ -114,7 +115,7 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 					UPDATE alert_instances
 					SET last_observed_at = GREATEST(last_observed_at, $3), updated_at = now()
 					WHERE tenant_id=$1 AND fingerprint=$2 AND monitor_state IN ('pending','firing','stale')`,
-					ev.GetTenantId(), fp, orNow(ev.GetReceivedAt().AsTime(), time.Now)); uerr != nil {
+					ev.GetTenantId(), fp, orNow(eventTime(ev.GetReceivedAt()), time.Now)); uerr != nil {
 					return ApplyOutcome{}, fmt.Errorf("refresh duplicate observation: %w", uerr)
 				}
 			}
@@ -169,7 +170,7 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 			UPDATE alert_instances
 			SET last_observed_at = GREATEST(last_observed_at, $3), updated_at = now()
 			WHERE tenant_id=$1 AND fingerprint=$2 AND monitor_state IN ('pending','firing','stale')`,
-			ev.GetTenantId(), fingerprint, orNow(ev.GetOccurredAt().AsTime(), time.Now)); err != nil {
+			ev.GetTenantId(), fingerprint, orNow(eventTime(ev.GetOccurredAt()), time.Now)); err != nil {
 			return ApplyOutcome{}, fmt.Errorf("health observation: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -182,8 +183,8 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 	if ev.GetSignal() == eventv1.EventSignal_EVENT_SIGNAL_RESOLVED {
 		signal = domainalert.SignalResolved
 	}
-	receivedAt := orNow(ev.GetReceivedAt().AsTime(), time.Now)
-	occurredAt := ev.GetOccurredAt().AsTime() // zero = unknown (docs/03 §3)
+	receivedAt := orNow(eventTime(ev.GetReceivedAt()), time.Now)
+	occurredAt := eventTime(ev.GetOccurredAt()) // zero = unknown (docs/03 §3)
 
 	// 5) Load the active (pending/firing/stale) instance for this identity.
 	row := tx.QueryRow(ctx, `
@@ -357,7 +358,7 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 }
 
 func (s *Store) insertInstance(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent, fingerprint, instanceID string, next domainalert.Snapshot) error {
-	endsAt := ev.GetEndsAt().AsTime()
+	endsAt := eventTime(ev.GetEndsAt())
 	var endsAny any
 	if !endsAt.IsZero() {
 		endsAny = endsAt
@@ -371,7 +372,7 @@ func (s *Store) insertInstance(ctx context.Context, tx pgx.Tx, ev *eventv1.Alert
 		instanceID, ev.GetTenantId(), ev.GetSource().GetSourceId(), fingerprint, next.EpisodeKey,
 		ev.GetAlertName(), severityOr(ev, "warning"), string(next.State),
 		ev.GetResource().GetClusterId(), ev.GetResource().GetResourceType(), ev.GetResource().GetResourceUid(),
-		labelsJSON(ev.GetLabels()), orNow(ev.GetStartsAt().AsTime(), time.Now), endsAny,
+		labelsJSON(ev.GetLabels()), orNow(eventTime(ev.GetStartsAt()), time.Now), endsAny,
 		next.LastObservedAt, orNow(next.LastTransitionAt, time.Now))
 	if err != nil {
 		return fmt.Errorf("insert instance: %w", err)
@@ -390,7 +391,7 @@ func (s *Store) updateInstance(ctx context.Context, tx pgx.Tx, ev *eventv1.Alert
 			    version=$9, updated_at=now()
 			WHERE id=$1 AND episode_key=$2`,
 			instanceID, next.EpisodeKey, string(next.State), severityOrNull(ev), labelsJSON(ev.GetLabels()),
-			orNow(ev.GetEndsAt().AsTime(), time.Now), next.LastObservedAt, orNow(next.LastTransitionAt, time.Now), next.Version)
+			orNow(eventTime(ev.GetEndsAt()), time.Now), next.LastObservedAt, orNow(next.LastTransitionAt, time.Now), next.Version)
 		if err != nil {
 			return fmt.Errorf("update instance: %w", err)
 		}
@@ -446,7 +447,7 @@ func insertEventHistory(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent) 
 		}
 	}
 	var occurred any
-	if t := ev.GetOccurredAt().AsTime(); !t.IsZero() {
+	if t := eventTime(ev.GetOccurredAt()); !t.IsZero() {
 		occurred = t
 	}
 	sev := ev.GetSeverity().String()
@@ -464,7 +465,7 @@ func insertEventHistory(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent) 
 		ev.GetResource().GetClusterId(), ev.GetResource().GetResourceType(), ev.GetResource().GetResourceUid(),
 		ev.GetResource().GetResourceName(), ev.GetResource().GetNamespace(),
 		labelsJSON(ev.GetLabels()), labelsJSON(ev.GetAnnotations()), rawAny,
-		occurred, orNow(ev.GetReceivedAt().AsTime(), time.Now))
+		occurred, orNow(eventTime(ev.GetReceivedAt()), time.Now))
 	if err != nil {
 		return fmt.Errorf("insert event history: %w", err)
 	}
@@ -680,6 +681,19 @@ func orNow(t time.Time, now func() time.Time) time.Time {
 		return now()
 	}
 	return t
+}
+
+// eventTime converts a canonical-event protobuf timestamp to time.Time and
+// maps nil/epoch-zero to the zero Time. This matters: (*Timestamp)(nil).AsTime()
+// returns 1970-01-01, which is NOT time.Time.IsZero() — the old code then
+// treated a missing occurred_at/received_at as "known" and wrote 1970 rows
+// (found by the P9 ClickHouse archive drill: transitions landed in the 197001
+// partition and were instantly TTL-deleted).
+func eventTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil || (ts.GetSeconds() == 0 && ts.GetNanos() == 0) {
+		return time.Time{}
+	}
+	return ts.AsTime()
 }
 
 func severityOrNull(ev *eventv1.AlertEvent) any {
@@ -1189,7 +1203,7 @@ func recordUIDHistory(ctx context.Context, tx pgx.Tx, ev *eventv1.AlertEvent) er
 		ON CONFLICT (tenant_id, cluster_id, entity_type, entity_uid, valid_from) DO NOTHING`,
 		ev.GetTenantId(), ev.GetResource().GetClusterId(), ev.GetResource().GetResourceType(),
 		ev.GetResource().GetResourceUid(), ev.GetResource().GetResourceName(),
-		orNow(ev.GetStartsAt().AsTime(), time.Now))
+		orNow(eventTime(ev.GetStartsAt()), time.Now))
 	return err
 }
 

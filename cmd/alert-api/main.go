@@ -70,7 +70,11 @@ func main() {
 	if cfg.ClickhouseURL != "" {
 		historyArchive = clickhouse.New(cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword)
 	}
-	httpv1.SetHistorySvc(history.NewService(queryStore, historyArchive, 7*24*time.Hour))
+	pgWindow, err := time.ParseDuration(cfg.HistoryPGWindow)
+	if err != nil || pgWindow <= 0 {
+		pgWindow = 7 * 24 * time.Hour
+	}
+	httpv1.SetHistorySvc(history.NewService(queryStore, historyArchive, pgWindow))
 	policySvc := policymgmt.NewService(postgres.NewPolicyStore(pool))
 	policySvc.SetAllowPrivate(cfg.AllowPrivateChannels) // dev/test escape hatch (T-013)
 	httpv1.SetPolicySvc(policySvc)
