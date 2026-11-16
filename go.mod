@@ -8,15 +8,15 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/lib/pq v1.10.9
-	github.com/oekit/bootstrap v0.7.10
+	github.com/oekit/bootstrap v0.7.13
 	github.com/oekit/bootstrap/obs v0.2.26
-	github.com/oekit/core v0.15.2
-	github.com/oekit/hertz v0.11.6
-	github.com/oekit/logx v0.10.0
-	github.com/oekit/metrics v0.3.1
-	github.com/oekit/middleware v0.18.0
-	github.com/oekit/pkg v0.48.0
-	github.com/oekit/tracing v0.4.4
+	github.com/oekit/core v0.15.4
+	github.com/oekit/hertz v0.12.5
+	github.com/oekit/logx v0.11.0
+	github.com/oekit/metrics v0.4.1
+	github.com/oekit/middleware v0.20.0
+	github.com/oekit/pkg v0.52.0
+	github.com/oekit/tracing v0.4.7
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/segmentio/kafka-go v0.4.51
@@ -120,8 +120,8 @@ require (
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oekit/concurrency v0.34.1 // indirect
-	github.com/oekit/registry v0.5.16 // indirect
+	github.com/oekit/concurrency v0.38.1 // indirect
+	github.com/oekit/registry v0.6.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect

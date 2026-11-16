@@ -964,3 +964,13 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
 - **P2×4**：#22 CH 时区/TTL 陷阱；#23 查询面语义（limit/分页/错误取证）；#24 健壮性批次（readiness 缺 Kafka/重连无 jitter/silence 1970 残留）；#25 安全加固批次（安全头/显式 body 上限/限流缓存/OTLP Insecure/channels 读权限/Edge 计数）。
 - **审计纠偏**（避免误立项）：无硬编码 demo token/18200；无服务端 SSE；Edge TLS 恒开、WAL 512MiB cap fail-closed；token 比较无明文 == 漏点。
 - **P10 影响**：#10/#11/#12/#13/#14 属 P10 正确性范畴延伸，估算增量 8-10 人日（P10 19→约 28 人日）；#21 随 R27；#17/#19 为 P10-008/P10-001 强关联前置。**下轮建议**：R27+AUD-012(#21) 先合入；P10 开工顺序改为 #10（CH 写安全）→ P10-001 → P10-002。
+
+---
+
+## 2026-11-17 · oekit 全矩阵升级（BOM v0.7.4 + #520 波最新 patch），代码零改动吃满行为红利
+
+- **版本跨度**：`go get github.com/oekit/oekit@v0.7.4` 一次拉齐 BOM 兼容快照，再单独 bump #520 替换波 patch——bootstrap v0.7.10→**v0.7.13**、core v0.15.2→**v0.15.4**、hertz v0.11.6→**v0.12.5**、logx v0.10.0→**v0.11.0**、metrics v0.3.1→**v0.4.1**、middleware v0.18.0→**v0.20.0**、pkg v0.48.0→**v0.52.0**、tracing v0.4.4→**v0.4.7**、indirect：concurrency v0.34.1→**v0.38.1**、registry v0.5.16→**v0.6.1**；新增 BOM 伞仓 v0.7.4；bootstrap/obs v0.2.26 已是最新。
+- **自动生效红利（零代码，行为级）**：① bootstrap #253 排空预算独立——drain 不再被 ExitWaitTime(10s) 封顶，graceful shutdown 排空更完整；② #254 healthz 超时竞态修复——已完成 check 不再被随机 deadline 丢弃（/healthz /readyz 更稳，与 #24 readiness 议题呼应）；③ bootstrap v0.7.11 批（Run 裸 panic #201、WorkerManager.Wait 永不返回 #210）；④ middleware v0.19.3 Fail 三级判定顺序对齐 #254、SkipPaths 单源同口径 #251（probePaths 直接受益）；⑤ logx v0.11.0 kv 热路径零分配 #174 + FilterKey 补生效 #194 + LOG_LEVEL OFF 档 #181；⑥ tracing v0.4.6 ServiceName 空串 fail-fast；⑦ core v0.15.3 config overlay 深拷贝；⑧ hertz #297 unix socket clientip；⑨ pkg v0.49–52 批量修复（cron/timex DST/container/config yaml 边界）。
+- **新能力核查（可用但不需要，未强用）**：hertz #298 WithExtraGatherers（已核查全仓指标面收口 oekitmetrics.Registry、retention 装配显式传参，无 DefaultRegisterer 黑洞）；mw v0.20 auditlog 增强（用自建 audit_logs，未用 mw auditlog）；concurrency #351 breaker 状态钩子（无熔断）；pkg v0.51 sse 游标内核（无服务端 SSE）；pkg v0.52 Newf/Wrapf 错误三形态（消费方风格迁移量大，与升级解耦，记录为可选跟进不在本次范围）。
+- **BREAKING 核查（均未触及，build 即证）**：logx #180 shutdown 兼容层删除、metrics v0.4.0 resilience int 五件套删除、concurrency v0.36.0 Slot.Panicked 退役、pkg v0.50 licensx/IM 载荷摘除。
+- **验证**：go build/tidy ✓；golangci-lint **0 issues** ✓；`go test ./...` 全量（PG/Kafka resident 55432/19092）结果见下轮回填；无代码改动（纯 go.mod/go.sum 变更）。
