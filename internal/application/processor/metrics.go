@@ -3,6 +3,7 @@
 package processor
 
 import (
+	"sync"
 	"time"
 
 	oekitmetrics "github.com/oekit/metrics"
@@ -21,14 +22,22 @@ var (
 	})
 )
 
-func init() {
-	for _, c := range []prometheus.Collector{eventsTotal, durationSeconds} {
-		if err := oekitmetrics.Registry.Register(c); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				panic(err)
+// registerOnce: the kafka package (consumer) imports processor, and alert-api
+// imports kafka for its producer — the API binary must not expose idle
+// processor metrics. Registration happens when the worker constructs the
+// processor service.
+var registerOnce sync.Once
+
+func registerMetrics() {
+	registerOnce.Do(func() {
+		for _, c := range []prometheus.Collector{eventsTotal, durationSeconds} {
+			if err := oekitmetrics.Registry.Register(c); err != nil {
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
 			}
 		}
-	}
+	})
 }
 
 func observeOutcome(outcome string) { eventsTotal.WithLabelValues(outcome).Inc() }

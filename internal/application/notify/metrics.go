@@ -5,6 +5,7 @@ package notify
 import (
 	oekitmetrics "github.com/oekit/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	"sync"
 )
 
 var (
@@ -26,14 +27,21 @@ var (
 	})
 )
 
-func init() {
-	for _, c := range []prometheus.Collector{attempts, pendingGauge, leaseRenewFailures, authorityGeneration} {
-		if err := oekitmetrics.Registry.Register(c); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				panic(err)
+// registerOnce: postgres imports the Task/Store types, so the API binary (which
+// imports postgres) must not expose idle notify metrics — only the worker's
+// notifier constructs this package's Service.
+var registerOnce sync.Once
+
+func registerMetrics() {
+	registerOnce.Do(func() {
+		for _, c := range []prometheus.Collector{attempts, pendingGauge, leaseRenewFailures, authorityGeneration} {
+			if err := oekitmetrics.Registry.Register(c); err != nil {
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
 			}
 		}
-	}
+	})
 }
 
 // attemptResult maps a SendResult onto the low-cardinality result label.

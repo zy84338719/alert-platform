@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	oekitmetrics "github.com/oekit/metrics"
@@ -43,14 +44,21 @@ var (
 	}, []string{"source"})
 )
 
-func init() {
-	for _, c := range []prometheus.Collector{activeAlerts, openIncidents, sourceHeartbeatAge} {
-		if err := oekitmetrics.Registry.Register(c); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				panic(err)
+// registerOnce keeps the gauges out of binaries that only import the types
+// (postgres imports SourceHeartbeat for its store): the API process must not
+// expose idle 0-valued business gauges.
+var registerOnce sync.Once
+
+func registerMetrics() {
+	registerOnce.Do(func() {
+		for _, c := range []prometheus.Collector{activeAlerts, openIncidents, sourceHeartbeatAge} {
+			if err := oekitmetrics.Registry.Register(c); err != nil {
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
 			}
 		}
-	}
+	})
 }
 
 // Service periodically refreshes the business gauges.
@@ -62,6 +70,7 @@ type Service struct {
 
 // NewService builds the sampler (default tick 30s).
 func NewService(store Store) *Service {
+	registerMetrics()
 	return &Service{store: store, interval: 30 * time.Second, now: time.Now}
 }
 

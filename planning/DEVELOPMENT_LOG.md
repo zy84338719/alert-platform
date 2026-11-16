@@ -858,3 +858,39 @@ CH-01 ClickHouse 归档（INC-007 联动）、INT-01 真实集成（BLOCKED）�
 ### 剩余
 
 P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKED，外部输入）。
+
+---
+
+## 2026-11-16 · R24：P9-CH-01 ClickHouse 归档代码面 + P9 集群验收（REVISION 5–7）
+
+### 交付（commit d3d0dca + 本轮集群/惰性注册修复）
+
+- **CH-01 代码面**：迁移 0012 `archive_cursors`；`archive` 服务（10s tick，≤500 行/批 × ≤10 批，
+  ClickHouse 写入成功才推进复合游标 `(transition_at, transition_id)`，失败不阻塞告警）；
+  `clickhouse` HTTP 客户端（JSONEachRow 写入、绑定参数读取，无新依赖）；`GET /history/v1/transitions`
+  （PG 窗口内查 PG、窗口外查 CH，`archived` 标记来源）；DDL `deploy/clickhouse/0001_transitions.sql`；
+  指标 `archive_written_total`/`errors_total`/`lag_seconds` 并入指标中心目录。
+- **集群部署**：rpi-k3s `ap-dev` REVISION 5（0.5.0-dev）→ 6（0.5.1-dev）→ 7（0.5.2-dev）；
+  migrate `schema 12`、`archive_cursors` 存在；API/edge 滚动成功。
+- **自审修复（集群验证发现）**：`telemetry`/`archive`/`processor`/`notify` 指标此前在 API 进程因类型导入
+  被 init 注册为恒 0 序列 → 改为构造函数 `sync.Once` 惰性注册；REVISION 7 实测 API 无这些序列
+  （ingest 指标正常保留 15 条）。
+- **真实 Prometheus 验证**：临时 Prometheus（静态抓 api Service + edge Pod）两者 **up**；
+  10 次未认证 ingest → `ingest_rejected_total{reason=unauthenticated}=10`；本地指标中心经
+  port-forward 查询得到真实序列（rate≈0.0252），控制台真实数据截图
+  `docs/evidence/console-metrics-real.png`；证据汇总 `docs/evidence/P9-cluster-verification-2026-11-16.md`。
+
+### 验收
+
+| 项 | 结果 |
+| --- | --- |
+| `golangci-lint run ./...` | 0 issues |
+| `go test ./...`（PG/Kafka resident） | 全绿（新增 archive/clickhouse/history API/PG cursor 测试） |
+| 迁移 | 12 非 dirty；`wantTables`/raw 幂等清单同步 |
+| chart 矩阵 | policies + rules 双 PASS |
+| 集群 | REVISION 7；指标暴露/PG 路由/401/503 检查通过；临时资源已清理 |
+
+### 剩余
+
+- P9-CH-01 真实 ClickHouse 写入/查询验收（INC-007，需 CH 集群）。
+- P9-INT-01 真实集成（DeepFlow/HUATUO/通知沙箱/四集群/长时压测）——唯一发布门槛（BLOCKED）。

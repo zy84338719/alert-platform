@@ -112,5 +112,6 @@ P9-004,P9,W23,P2,Edge-Core,0.5,Edge/SSE 指标,sseclient reconnect_total；colle
 P9-005,P9,W23,P1,Platform,2,业务 Gauges,active_instances/incident_open/source_heartbeat_age 周期采样,待实现,,DONE
 P9-006,P9,W23,P1,SRE,2,PrometheusRule 自身告警+独立兜底通道,IngestRejectRate/Lag/DLQ/Authority/Readiness 规则+非 outbox 兜底 webhook,规则渲染矩阵+兜底单测,,DONE
 P9-007,P9,W24,P1,Frontend,5,产品内指标中心,数据源评审+GET /metrics/v1/query 白名单+控制台趋势页,白名单外 403+页面截图,,DONE
-P9-008,P9,W25,P2,Backend-Integration,5,ClickHouse 归档,CH Writer+DDL+查询路由（无 CH 时关闭）,接口单测+INC-007 实跑,,TODO
+P9-008,P9,W25,P2,Backend-Integration,5,ClickHouse 归档,CH Writer+DDL+查询路由（无 CH 时关闭）,接口单测+INC-007 实跑,,DONE
 P9-009,P9,W23,P0,QA,5,真实集成发布门槛,DeepFlow/HUATUO/沙箱/四集群/CH/长时压测,真实环境 E2E 报告,ARC-002,BLOCKED
+P9-010,P9,W23,P1,SRE,1,P9 集群验收,REVISION 5-7 部署/迁移 12/指标暴露/真实 Prometheus 抓取/指标中心真实查询,目标 up+真实序列+截图 docs/evidence/P9-cluster-verification-2026-11-16.md,P9-001,DONE

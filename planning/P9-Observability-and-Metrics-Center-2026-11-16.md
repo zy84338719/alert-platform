@@ -121,8 +121,15 @@ ClickHouse 仅有接口；控制台无指标查询/看板页。
 | P9-OBS-06 | 业务 Gauges | DONE | `77b0ec7` | TestSampleBusinessGauges（active/incident/heartbeat+序列清理） |
 | P9-OBS-07 | 自身告警+兜底通道 | DONE | `77b0ec7` | TestSelfAlerter×3 + scripts/test_chart_rules.py（5 规则/selector/extraRules/docs 一致） |
 | P9-MC-01 | 产品内指标中心 | DONE | `77b0ec7` | 数据源=Prometheus API；metricsquery/promclient/handler 测试 + 控制台截图 docs/evidence/console-metrics.png |
-| P9-CH-01 | ClickHouse 归档 | TODO | | INC-007 联动 |
+| P9-CH-01 | ClickHouse 归档 | DONE（代码面） | `d3d0dca` | 迁移 0012+cursor/HTTP 客户端/PG-CH 路由；单测+PG 集成；真实 CH 待 INC-007 |
 | P9-INT-01 | 真实集成 | BLOCKED | — | 外部输入 |
+
+## 6. 集群验收（2026-11-16）
+
+rpi-k3s `ap-dev` REVISION 5→6→7（镜像 0.5.0→0.5.2-dev）：迁移 12 应用；P9 指标经 `/metrics` 暴露；
+临时 Prometheus 抓取 api/edge 均为 up；指标中心对接真实 Prometheus 返回真实序列；
+控制台真实数据截图 `docs/evidence/console-metrics-real.png`。
+详见 `docs/evidence/P9-cluster-verification-2026-11-16.md`（限制：无 ClickHouse/无 worker）。
 
 ---
 

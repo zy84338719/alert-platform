@@ -4,7 +4,7 @@
 image:
   registry: ""
   repository: alert-platform
-  tag: "0.4.0-dev"
+  tag: "0.5.2-dev"
   pullPolicy: IfNotPresent
 
 nodeSelector:

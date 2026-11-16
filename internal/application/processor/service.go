@@ -46,6 +46,7 @@ type Service struct {
 
 // NewService builds the processor over a store port.
 func NewService(store Store) *Service {
+	registerMetrics()
 	return &Service{store: store}
 }
 

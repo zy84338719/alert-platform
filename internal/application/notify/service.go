@@ -132,6 +132,7 @@ type Service struct {
 // concurrency 4, mode active (the persisted authority row remains the source
 // of truth until InitAuthority reconciles it).
 func NewService(store Store, sender Sender) *Service {
+	registerMetrics()
 	return &Service{
 		store: store, sender: sender,
 		interval: 500 * time.Millisecond, lease: time.Minute, batch: 50,

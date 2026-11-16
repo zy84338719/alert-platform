@@ -7,6 +7,7 @@ package archive
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	oekitmetrics "github.com/oekit/metrics"
@@ -55,14 +56,20 @@ var (
 	})
 )
 
-func init() {
-	for _, c := range []prometheus.Collector{writtenTotal, errorTotal, lagSeconds} {
-		if err := oekitmetrics.Registry.Register(c); err != nil {
-			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-				panic(err)
+// registerOnce: postgres imports Transition for its store, so binaries that
+// only use the types (alert-api) must not expose idle archive metrics.
+var registerOnce sync.Once
+
+func registerMetrics() {
+	registerOnce.Do(func() {
+		for _, c := range []prometheus.Collector{writtenTotal, errorTotal, lagSeconds} {
+			if err := oekitmetrics.Registry.Register(c); err != nil {
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
 			}
 		}
-	}
+	})
 }
 
 // Service runs the archiver loop.
@@ -77,6 +84,7 @@ type Service struct {
 
 // NewService builds the archiver; defaults: tick 10s, batch 500, 10 batches.
 func NewService(store Store, writer Writer) *Service {
+	registerMetrics()
 	return &Service{store: store, writer: writer, interval: 10 * time.Second,
 		batch: 500, maxBatches: 10, now: time.Now}
 }
