@@ -124,6 +124,8 @@ type Service struct {
 	channelRate float64 // sends/sec per channel; 0 = unlimited
 	rateMu      sync.Mutex
 	channelNext map[string]time.Time
+	// pendingSampledAt throttles the pending-depth COUNT (P9-OBS-04).
+	pendingSampledAt time.Time
 }
 
 // NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
@@ -159,6 +161,7 @@ func (s *Service) InitAuthority(ctx context.Context) error {
 	s.generation = a.Generation
 	s.mode = a.Mode
 	s.authorityDirty = false
+	authorityGeneration.Set(float64(a.Generation))
 	logx.CtxInfo(ctx, "notification authority", "component", "alert-worker",
 		"mode", s.mode, "generation", s.generation)
 	return nil
@@ -237,6 +240,7 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 	if !s.ensureAuthority(ctx) {
 		return 0
 	}
+	s.samplePending(ctx)
 	if s.mode == ModeOff {
 		return 0
 	}
@@ -315,10 +319,12 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 	// after expiry rather than risking an unowned send.
 	if err := s.store.RenewNotifyLease(ctx, t.ID, t.LeaseToken, s.lease); err != nil {
 		if errors.Is(err, ErrStaleNotifyLease) {
+			leaseRenewFailures.WithLabelValues("stale").Inc()
 			logx.CtxWarn(ctx, "notification lease lost before send; skipping duplicate",
 				"component", "alert-worker", "task", t.ID)
 			return
 		}
+		leaseRenewFailures.WithLabelValues("error").Inc()
 		logx.CtxError(ctx, "notification lease renewal failed; delivery deferred (fail-closed)",
 			logx.ErrKey, err, "task", t.ID)
 		return
@@ -355,6 +361,7 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 		return
 	}
 	res := s.sender.Send(ctx, t.ChannelType, t.ChannelCfg, t.Payload)
+	attempts.WithLabelValues(t.ChannelType, attemptResult(res)).Inc()
 	if err := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
 		if errors.Is(err, ErrStaleNotifyLease) {
 			// P1-02: the lease expired and another worker re-claimed — this
@@ -380,6 +387,29 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 		"component", "alert-worker", "task", t.ID, "channel_type", t.ChannelType,
 		"attempt", t.Attempts, "outcome", outcome, "http_status", res.HTTPStatus,
 		logx.ErrKey, res.Err)
+}
+
+// samplePending refreshes alert_platform_notify_pending every 30s when the
+// store supports the depth counter (real PG; test doubles skip it).
+func (s *Service) samplePending(ctx context.Context) {
+	if time.Since(s.pendingSampledAt) < 30*time.Second {
+		return
+	}
+	counter, ok := s.store.(interface {
+		CountPendingNotifyTasks(ctx context.Context, generation int64) (int64, error)
+	})
+	if !ok {
+		return
+	}
+	s.pendingSampledAt = time.Now()
+	n, err := counter.CountPendingNotifyTasks(ctx, s.generation)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.CtxError(ctx, "pending notification count failed", logx.ErrKey, err)
+		}
+		return
+	}
+	pendingGauge.Set(float64(n))
 }
 
 // waitChannelSlot paces sends per channel (P8-P1-04). Returns false when the

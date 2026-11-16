@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
@@ -81,4 +83,39 @@ func TestHandlePermanentClassification(t *testing.T) {
 			t.Fatalf("decode failure = %v, want Permanent", err)
 		}
 	})
+}
+
+// P9-OBS-03：处理结果与事务耗时都有指标（applied/permanent/transient）。
+func TestHandleMetricsOutcomes(t *testing.T) {
+	wire := validWireEvent(t)
+	ctx := context.Background()
+	outcome := func(name string) float64 { return testutil.ToFloat64(eventsTotal.WithLabelValues(name)) }
+	handle := func(storeErr error) {
+		t.Helper()
+		_ = NewService(&fakeStore{err: storeErr}).Handle(ctx, IncomingMessage{Value: wire})
+	}
+
+	before := outcome("applied")
+	handle(nil)
+	if got := outcome("applied") - before; got != 1 {
+		t.Fatalf("applied delta = %v, want 1", got)
+	}
+	before = outcome("permanent")
+	handle(fmt.Errorf("%w: missing signal", domainalert.ErrInvalidEvent))
+	if got := outcome("permanent") - before; got != 1 {
+		t.Fatalf("permanent delta = %v, want 1", got)
+	}
+	before = outcome("transient")
+	handle(errors.New("pg down"))
+	if got := outcome("transient") - before; got != 1 {
+		t.Fatalf("transient delta = %v, want 1", got)
+	}
+
+	var hist dto.Metric
+	if err := durationSeconds.Write(&hist); err != nil {
+		t.Fatal(err)
+	}
+	if hist.GetHistogram().GetSampleCount() == 0 {
+		t.Fatal("processor duration histogram recorded no observations")
+	}
 }

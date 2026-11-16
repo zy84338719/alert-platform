@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -59,22 +60,28 @@ func (s *Service) Handle(ctx context.Context, msg IncomingMessage) error {
 	}
 	ev := &eventv1.AlertEvent{}
 	if err := proto.Unmarshal(msg.Value, ev); err != nil {
+		observeOutcome("permanent")
 		return Permanent(fmt.Errorf("decode canonical event: %w", err))
 	}
+	start := time.Now()
 	duplicate, err := s.store.ApplyEvent(ctx, ev)
+	observeDuration(time.Since(start))
 	if err != nil {
 		// Permanent classes: the payload itself is unusable (contract
 		// violation / incomplete identity) — quarantine into the DLQ and
 		// commit. Everything else (DB down, lock timeout) stays transient.
 		if errors.Is(err, domainalert.ErrIncompleteIdentity) || errors.Is(err, domainalert.ErrInvalidEvent) {
+			observeOutcome("permanent")
 			return Permanent(fmt.Errorf("apply event %s: %w", ev.GetTransportId(), err))
 		}
+		observeOutcome("transient")
 		return fmt.Errorf("apply event %s: %w", ev.GetTransportId(), err)
 	}
 	reason := "applied"
 	if duplicate {
 		reason = "duplicate-observation"
 	}
+	observeOutcome(reason)
 	logx.CtxInfo(ctx, "event processed",
 		"component", "alert-worker",
 		"transport_id", ev.GetTransportId(),

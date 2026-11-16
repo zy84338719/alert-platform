@@ -17,6 +17,7 @@ import (
 	ekiterrors "github.com/oekit/pkg/errors"
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
+	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/sourcereg"
 )
 
@@ -62,14 +63,18 @@ func IngestAuthMiddleware() app.HandlerFunc {
 	}
 }
 
-// authFailure maps registry sentinels to the fail-closed HTTP responses.
+// authFailure maps registry sentinels to the fail-closed HTTP responses and
+// accounts for them in the ingest rejection metric (P9-OBS-02).
 func authFailure(ctx context.Context, c *app.RequestContext, err error) {
 	switch err {
 	case sourcereg.ErrUnauthenticated:
+		ingest.RecordRejected("unauthenticated")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
 	case sourcereg.ErrDisabled:
+		ingest.RecordRejected("disabled")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40302, 403, "source disabled"))
 	default:
+		ingest.RecordRejected("registry")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50001, 500, "registry unavailable"))
 	}
 	c.Abort()

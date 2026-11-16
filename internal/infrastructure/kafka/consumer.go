@@ -78,6 +78,11 @@ func (c *Consumer) Run(ctx context.Context, handle func(context.Context, process
 			Key: string(msg.Key), Headers: hdrs, Value: msg.Value,
 			Topic: msg.Topic, Partition: msg.Partition, Offset: msg.Offset,
 		}
+		// P9-OBS-03: lag is sampled per fetch (<=500ms); -1 means the client
+		// has not resolved the high-water mark yet.
+		if stats := c.reader.Stats(); stats.Lag >= 0 {
+			consumerLag.WithLabelValues(msg.Topic, c.reader.Config().GroupID).Set(float64(stats.Lag))
+		}
 
 		if err := c.handleWithRetry(ctx, in, handle); err != nil {
 			if ctx.Err() != nil {
@@ -155,6 +160,7 @@ func (c *Consumer) quarantine(ctx context.Context, in processor.IncomingMessage,
 	}); err != nil {
 		return fmt.Errorf("dlq publish: %w", err)
 	}
+	dlqQuarantined.WithLabelValues(in.Topic).Inc()
 	return nil // quarantined: caller commits the offset
 }
 

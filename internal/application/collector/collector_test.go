@@ -13,7 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/example/alert-platform/internal/application/edge"
+	"github.com/example/alert-platform/internal/application/occurrence"
 	"github.com/example/alert-platform/internal/infrastructure/sseclient"
 	"github.com/example/alert-platform/internal/infrastructure/wal"
 )
@@ -192,3 +195,32 @@ func (a *streamAdapter) Run(ctx context.Context, handle func(Event) error) error
 	})
 }
 func (a *streamAdapter) LastID() string { return a.c.LastID() }
+
+// stubBuffer captures WAL appends without disk.
+type stubBuffer struct{ n int }
+
+func (s *stubBuffer) Append(rec edge.Record) (edge.Record, error) {
+	s.n++
+	return rec, nil
+}
+
+// P9-OBS-05：gap 标记必须计入 alert_platform_edge_sse_gap_total。
+func TestSSEGapMetricIncrements(t *testing.T) {
+	before := testutil.ToFloat64(sseGapTotal)
+	buf := &stubBuffer{}
+	svc := &Service{
+		wal: buf,
+		cfg: Config{TenantID: "t-gap", SourceID: "s-gap", ClusterID: "c-gap",
+			PromoteThreshold: 3, PromoteWindow: time.Minute},
+		agg: occurrence.New(3, time.Minute),
+	}
+	if err := svc.handle(Event{Gap: true, GapFrom: "2", GapTo: "5"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.ToFloat64(sseGapTotal) - before; got != 1 {
+		t.Fatalf("sse_gap_total delta = %v, want 1", got)
+	}
+	if buf.n != 1 {
+		t.Fatalf("gap occurrence not appended to WAL: %d", buf.n)
+	}
+}

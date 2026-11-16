@@ -1430,6 +1430,16 @@ func (s *Store) CorrelateOnce(ctx context.Context) (int, error) {
 	return merged, nil
 }
 
+// CountPendingNotifyTasks reports the current-era pending/retry depth
+// (P9-OBS-04 gauge; sampled every 30s by the notify loop, not per tick).
+func (s *Store) CountPendingNotifyTasks(ctx context.Context, generation int64) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM notification_outbox
+		WHERE status IN ('pending','retry_scheduled') AND authority_generation=$1`, generation).Scan(&n)
+	return n, err
+}
+
 // PeekNotifyTasks lists pending tasks of the current authority generation
 // without claiming (notify shadow mode).
 func (s *Store) PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]notify.Task, error) {

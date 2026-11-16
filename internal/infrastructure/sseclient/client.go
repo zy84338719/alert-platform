@@ -84,6 +84,7 @@ func (c *Client) Run(ctx context.Context, handle Handler) error {
 				return unWrap(err)
 			}
 			// transient: brief pause then reconnect (gap detection follows)
+			reconnectTotal.Inc()
 			select {
 			case <-ctx.Done():
 				return nil

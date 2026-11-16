@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
 
@@ -116,6 +117,10 @@ func TestConsumerDLQAndFailStop(t *testing.T) {
 	}
 	if origin["original_offset"] == "" {
 		t.Fatal("dlq message missing original_offset header")
+	}
+	// P9-OBS-03: the quarantine counter tracks DLQ growth per topic.
+	if got := testutil.ToFloat64(dlqQuarantined.WithLabelValues(topic)); got < 1 {
+		t.Fatalf("dlq_quarantined_total{topic=%s} = %v, want >=1", topic, got)
 	}
 
 	// Offsets committed past BOTH messages (poison quarantined, not skipped

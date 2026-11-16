@@ -28,10 +28,12 @@ var Ingest *ingest.Service
 func PushBatch(ctx context.Context, c *app.RequestContext) {
 	var req v1.PushBatchRequest
 	if err := c.BindAndValidate(&req); err != nil {
+		ingest.RecordRejected("invalid")
 		mw.Fail(ctx, c, ekiterrors.NewBadRequestError(err.Error()))
 		return
 	}
 	if Ingest == nil {
+		ingest.RecordRejected("unavailable")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50300, 503, "ingest service not wired"))
 		return
 	}
@@ -43,6 +45,7 @@ func PushBatch(ctx context.Context, c *app.RequestContext) {
 	ident := authenticatedEdge(c)
 	if src == nil && ident == nil {
 		// middleware bypassed (mis-wired route): fail closed, never anonymous
+		ingest.RecordRejected("unauthenticated")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40101, 401, "authentication required"))
 		return
 	}
@@ -53,6 +56,7 @@ func PushBatch(ctx context.Context, c *app.RequestContext) {
 		ok = enforceEdgeIngestIdentity(ctx, req.GetEvents(), ident)
 	}
 	if !ok {
+		ingest.RecordRejected("forbidden")
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40304, 403,
 			"event identity does not match the authenticated credential"))
 		return
@@ -60,7 +64,8 @@ func PushBatch(ctx context.Context, c *app.RequestContext) {
 
 	batchID, err := Ingest.PushBatch(ctx, req.GetBatchId(), req.GetEvents())
 	if err != nil {
-		mw.Fail(ctx, c, err) // validation -> 400; broker down -> retriable 5xx
+		ingest.RecordRejected("service") // validation 400 / broker 5xx
+		mw.Fail(ctx, c, err)
 		return
 	}
 	resp := &v1.PushBatchResponse{DurableBatchId: batchID}

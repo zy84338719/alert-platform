@@ -215,6 +215,7 @@ func parseCloudEvent(data string) (*cloudEvent, error) {
 func (s *Service) handle(ev Event) error {
 	if ev.Gap {
 		gapCount++
+		sseGapTotal.Inc()
 		logx.CtxWarn(context.Background(), "SSE GAP detected: events lost while disconnected (SSE is not replayable)",
 			"from", ev.GapFrom, "to", ev.GapTo, "source", s.cfg.SourceID)
 		// The gap itself becomes a first-class occurrence so the platform

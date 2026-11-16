@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 )
 
 type modeStore struct {
@@ -418,5 +421,35 @@ func TestMultiWorkerSameModeSharesGeneration(t *testing.T) {
 	}
 	if n := b.DeliverOnce(ctx); n != 1 {
 		t.Fatalf("replica B claimed %d, want 1 (same-era task must stay claimable)", n)
+	}
+}
+
+// P9-OBS-04：投递尝试、authority generation 与续租失败都有指标。
+func TestNotifyMetrics(t *testing.T) {
+	ctx := context.Background()
+	ms := &modeStore{}
+	svc := NewService(ms, &captureSender{})
+	ms.tasks = []Task{{ID: "nm-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+
+	beforeSent := testutil.ToFloat64(attempts.WithLabelValues("", "sent"))
+	svc.DeliverOnce(ctx)
+	if got := testutil.ToFloat64(attempts.WithLabelValues("", "sent")) - beforeSent; got != 1 {
+		t.Fatalf("notify attempt{sent} delta = %v, want 1", got)
+	}
+	var gauge dto.Metric
+	if err := authorityGeneration.Write(&gauge); err != nil {
+		t.Fatal(err)
+	}
+	if got := gauge.GetGauge().GetValue(); got != 1 {
+		t.Fatalf("authority_generation = %v, want 1", got)
+	}
+
+	beforeStale := testutil.ToFloat64(leaseRenewFailures.WithLabelValues("stale"))
+	ms2 := &modeStore{}
+	svc2 := NewService(&staleRenewStore{modeStore: ms2}, &captureSender{})
+	ms2.tasks = []Task{{ID: "nm-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	svc2.DeliverOnce(ctx)
+	if got := testutil.ToFloat64(leaseRenewFailures.WithLabelValues("stale")) - beforeStale; got != 1 {
+		t.Fatalf("lease_renew_failures{stale} delta = %v, want 1", got)
 	}
 }

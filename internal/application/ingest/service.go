@@ -9,6 +9,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"time"
 
 	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/oekit/tracing/traceid"
@@ -70,6 +71,8 @@ func NewService(pub Publisher) *Service {
 // the caller (same batch_id → same transport ids), and the consumer-side
 // receipts layer absorbs the redeliveries — no loss, no duplicate effects.
 func (s *Service) PushBatch(ctx context.Context, batchID string, events []*eventv1.AlertEvent) (string, error) {
+	start := time.Now()
+	defer func() { ObserveBatch(time.Since(start)) }()
 	if batchID == "" {
 		return "", fmt.Errorf("batch_id is required")
 	}
@@ -112,6 +115,7 @@ func (s *Service) PushBatch(ctx context.Context, batchID string, events []*event
 	if err := s.pub.PublishEvents(ctx, msgs); err != nil {
 		return "", err
 	}
+	RecordAccepted(len(events))
 	return batchID, nil
 }
 
