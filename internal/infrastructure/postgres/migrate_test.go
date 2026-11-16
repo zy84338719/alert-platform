@@ -47,6 +47,7 @@ var wantTables = []string{
 	"incident_escalations",    // 0006 (INC-005)
 	"notification_authority",  // 0009 (P8-P0-01 通知权持久化)
 	"edge_uplink_credentials", // 0010 (P8-P0-02 Edge 上行身份)
+	"archive_cursors",         // 0012 (P9-CH-01 归档游标)
 }
 
 func absMigrations(t *testing.T) string {
@@ -86,16 +87,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 11 {
-		t.Fatalf("version after first Up = %d, want 11 (0001..0011: P8 active-episode uniqueness)", v1)
+	if v1 != 12 {
+		t.Fatalf("version after first Up = %d, want 12 (0001..0012: P9 archive cursor)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 11 {
-		t.Fatalf("version after second Up = %d, want 11", v2)
+	if v2 != 12 {
+		t.Fatalf("version after second Up = %d, want 12", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the
@@ -124,6 +125,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 		"0007_event_history.up.sql", "0008_notify_lease_fencing.up.sql", "0009_notify_authority.up.sql",
 		"0010_edge_uplink_credentials.up.sql",
 		"0011_alert_instance_active_unique.up.sql",
+		"0012_archive_cursor.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

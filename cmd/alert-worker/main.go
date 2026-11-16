@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/example/alert-platform/internal/application/archive"
 	"github.com/example/alert-platform/internal/application/escalation"
 	"github.com/example/alert-platform/internal/application/health"
 	"github.com/example/alert-platform/internal/application/notify"
@@ -33,6 +34,7 @@ import (
 	"github.com/example/alert-platform/internal/application/telemetry"
 	"github.com/example/alert-platform/internal/application/worker"
 	"github.com/example/alert-platform/internal/infrastructure/channel"
+	"github.com/example/alert-platform/internal/infrastructure/clickhouse"
 	"github.com/example/alert-platform/internal/infrastructure/kafka"
 	"github.com/example/alert-platform/internal/infrastructure/platform"
 	"github.com/example/alert-platform/internal/infrastructure/postgres"
@@ -91,6 +93,14 @@ func main() {
 		// telemetry sampler (P9-OBS-06): business gauges every 30s; auxiliary.
 		telemetrySvc := telemetry.NewService(store)
 
+		// transition archiver (P9-CH-01): PG -> ClickHouse, auxiliary and
+		// disabled unless ALERT_CLICKHOUSE_URL is configured.
+		var archiveSvc *archive.Service
+		if cfg.ClickhouseURL != "" {
+			archiveSvc = archive.NewService(postgres.NewArchiveStore(pool), clickhouse.New(
+				cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword))
+		}
+
 		// retention: receipts cleanup (RETN-001) + notifications/audit (RETN-002);
 		// counters join the registry the /metrics endpoint serves.
 		retentionSvc := retention.NewService(retention.Multi(store, store),
@@ -111,6 +121,9 @@ func main() {
 		group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
 		group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})
 		group.Go(worker.Task{Name: "telemetry", Critical: false, Run: telemetrySvc.Run})
+		if archiveSvc != nil {
+			group.Go(worker.Task{Name: "archive", Critical: false, Run: archiveSvc.Run})
+		}
 		group.Go(worker.Task{Name: "processor", Critical: true, Run: func(ctx context.Context) error {
 			return consumer.Run(ctx, processorSvc.Handle)
 		}})

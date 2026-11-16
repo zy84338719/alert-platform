@@ -20,12 +20,14 @@ import (
 	httpadapter "github.com/example/alert-platform/internal/adapter/inbound/http/router"
 	httpv1 "github.com/example/alert-platform/internal/adapter/inbound/http/v1"
 	"github.com/example/alert-platform/internal/application/authn"
+	"github.com/example/alert-platform/internal/application/history"
 	"github.com/example/alert-platform/internal/application/incident"
 	"github.com/example/alert-platform/internal/application/ingest"
 	"github.com/example/alert-platform/internal/application/metricsquery"
 	"github.com/example/alert-platform/internal/application/policymgmt"
 	"github.com/example/alert-platform/internal/application/query"
 	"github.com/example/alert-platform/internal/application/sourcereg"
+	"github.com/example/alert-platform/internal/infrastructure/clickhouse"
 	"github.com/example/alert-platform/internal/infrastructure/kafka"
 	"github.com/example/alert-platform/internal/infrastructure/platform"
 	"github.com/example/alert-platform/internal/infrastructure/postgres"
@@ -60,7 +62,15 @@ func main() {
 	defer pool.Close()
 	authnStore := postgres.NewAuthnStore(pool)
 	httpv1.SetSourceRegistry(sourcereg.NewService(postgres.NewSourceStore(pool)))
-	httpv1.SetQuerySvc(query.NewService(postgres.NewQueryStore(pool)))
+	queryStore := postgres.NewQueryStore(pool)
+	httpv1.SetQuerySvc(query.NewService(queryStore))
+	// P9-CH-01: history reads hit PG inside the retention window and the
+	// ClickHouse archive beyond it (nil archive = PG-only).
+	var historyArchive history.Store
+	if cfg.ClickhouseURL != "" {
+		historyArchive = clickhouse.New(cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword)
+	}
+	httpv1.SetHistorySvc(history.NewService(queryStore, historyArchive, 7*24*time.Hour))
 	policySvc := policymgmt.NewService(postgres.NewPolicyStore(pool))
 	policySvc.SetAllowPrivate(cfg.AllowPrivateChannels) // dev/test escape hatch (T-013)
 	httpv1.SetPolicySvc(policySvc)
@@ -101,6 +111,8 @@ func main() {
 		// "backend not configured" state instead of a 404.
 		h.GET("/metrics/v1/catalog", httpv1.MetricsCatalog)
 		h.GET("/metrics/v1/query", httpv1.MetricsQueryRange)
+		// P9-CH-01: PG window + optional ClickHouse archive.
+		h.GET("/history/v1/transitions", httpv1.ListHistoryTransitions)
 		console.Register(h)
 	}
 	if err := platform.RunService(cfg, platform.ComponentAPI, version, setup); err != nil {

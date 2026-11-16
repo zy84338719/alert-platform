@@ -91,6 +91,12 @@ var catalog = []Metric{
 		expr: `sum(rate(alert_platform_edge_reconnect_total[5m]))`},
 	{Name: "edge_sse_gap_rate", Unit: "gaps/s", Description: "SSE gap markers per second (data loss windows).",
 		expr: `sum(rate(alert_platform_edge_sse_gap_total[5m]))`},
+	{Name: "archive_written_rate", Unit: "rows/s", Description: "Transitions written to the ClickHouse archive.",
+		expr: `sum(rate(alert_platform_archive_written_total[5m]))`},
+	{Name: "archive_lag", Unit: "s", Description: "Age of the most recently archived transition.",
+		expr: `alert_platform_archive_lag_seconds`},
+	{Name: "archive_error_rate", Unit: "errors/s", Description: "Archiver failures per second.",
+		expr: `sum(rate(alert_platform_archive_errors_total[5m]))`},
 }
 
 var byName = func() map[string]Metric {

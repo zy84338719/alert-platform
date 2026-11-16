@@ -62,6 +62,13 @@ type Config struct {
 	// product Console "metrics center"; empty disables the endpoints (503).
 	PrometheusURL string `yaml:"prometheus_url" env:"ALERT_PROMETHEUS_URL" default:""`
 
+	// ClickHouse archive (P9-CH-01 / INC-007). Empty URL disables the
+	// archiver and keeps history reads on the PG window.
+	ClickhouseURL      string `yaml:"clickhouse_url" env:"ALERT_CLICKHOUSE_URL" default:""`
+	ClickhouseDB       string `yaml:"clickhouse_db" env:"ALERT_CLICKHOUSE_DB" default:"default"`
+	ClickhouseUser     string `yaml:"clickhouse_user" env:"ALERT_CLICKHOUSE_USER" default:""`
+	ClickhousePassword string `yaml:"clickhouse_password" env:"ALERT_CLICKHOUSE_PASSWORD" default:""`
+
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.
 	RetentionReceipts string `yaml:"retention_receipts" env:"ALERT_RETENTION_RECEIPTS" default:"168h"`
