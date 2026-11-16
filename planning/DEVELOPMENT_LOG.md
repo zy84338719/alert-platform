@@ -953,3 +953,14 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   backlog 增 P10-001..008（W26–W27，TODO×8）。
 - **GitHub issues**：跟踪单 ×1（P10–P13 路线）+ P10 任务单 ×8（标题带 [P10-00x][P0/P1]，正文含代码证据/验收标准/依赖）。
 - 下轮建议：按 P10-001→002→003 串行开工（游标语义是幂等与路由的前提）；P10-005/006/007 可并行。
+
+---
+
+## 2026-11-17 · 深度审计第二轮（四面并行 → 47 候选合并 16 项 → issues #10-#25）
+
+- **四面并行深度审计**（通知/outbox、归档/CH/历史、Processor/Kafka/PG、API/安全/Edge），候选 47 项，同根源合并后立项 **16 个新 issue（#10-#25）**，关键断言（CH 200 判成功、notify 无终态、fingerprint sentinel 断裂、reconcile event_id 撞 UNIQUE、heartbeat 信任 body、receipt DO NOTHING、producer 注释）已逐条亲自验证代码。跟踪单 #9 已补批次链接与 P10 关系说明。
+- **P0×2**：#10 CH INSERT 无 wait_end_of_query（执行期错误 200+body 注入 → 游标照常推进 → 批次静默丢失）；#11 通知 outbox 无终态出口（无 max attempts/无 DLQ/ssrf 码无限重试/渠道禁用僵尸行 + gauge 虚高）。
+- **P1×10**：#12 fingerprint 返回裸 errors.New 而非 sentinel（errors.Is 恒 false → 毒消息 crash-loop 阻塞分区，测试注入 sentinel 掩盖）；#13 receipt.last_seen_at 永不刷新（幂等窗口虚假，过期重放重复 page）；#14 reconcile 固定 event_id 撞 UNIQUE → stale 二次降级永久失败且 readiness 绿；#15 PG 池/超时零配置（advisory lock 无限等待、挂死不降级）；#16 >1MB 事件毒化整批（无预检+裸错误 500 塌缩+Edge 队头阻塞）；#17 escalation/correlation 双副本无互斥（竞态双 page/跨 incident 双关联）；#18 heartbeat 信任 body tenant/source（共享 key → 跨租户水位伪造）；#19 alert_transitions 三处索引缺失+首跑 1970 全表回填；#20 lifecycle 三缺口（毒行/relay 乱序/producer 幂等注释不实——kafka-go 无 idempotence）；#21 shadow peek 与 R27 created_mode 语义错位（**应随 R27 合入前修掉**）。
+- **P2×4**：#22 CH 时区/TTL 陷阱；#23 查询面语义（limit/分页/错误取证）；#24 健壮性批次（readiness 缺 Kafka/重连无 jitter/silence 1970 残留）；#25 安全加固批次（安全头/显式 body 上限/限流缓存/OTLP Insecure/channels 读权限/Edge 计数）。
+- **审计纠偏**（避免误立项）：无硬编码 demo token/18200；无服务端 SSE；Edge TLS 恒开、WAL 512MiB cap fail-closed；token 比较无明文 == 漏点。
+- **P10 影响**：#10/#11/#12/#13/#14 属 P10 正确性范畴延伸，估算增量 8-10 人日（P10 19→约 28 人日）；#21 随 R27；#17/#19 为 P10-008/P10-001 强关联前置。**下轮建议**：R27+AUD-012(#21) 先合入；P10 开工顺序改为 #10（CH 写安全）→ P10-001 → P10-002。
