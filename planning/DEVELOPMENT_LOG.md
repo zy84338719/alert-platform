@@ -924,3 +924,16 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   的 <2000 时间戳（用 created_at/received_at 作为最佳可得代理），仅触碰可疑列。
 - 本地 dev 库实测：修复前 transitions/instances 各 2 条 1970，修复后全部归零；集群 dev 库检测为 0。
 - docs/05 增升级注意：先跑修复脚本再重新归档，避免 CH 197001 分区被 TTL 静默删除。
+
+---
+
+## 2026-11-17 · R26：10 分钟长稳压测证据 + CI chart 门禁 + EdgeKey 恒时比较
+
+- **长稳证据**：`perf_capacity.sh` 参数化（`STEADY_DURATION/BURST_DURATION/DRAIN_WAIT`）；
+  稳态 100 EPS × 600s 全程 **0 错误**，push P95 14.7ms、端到端 P95 **170ms**（SLO 余量 ~17×）；
+  突发 2000 EPS × 60s 0 错误；300s 排水后消费残差 ~1.7k。
+  证据 `docs/evidence/perf-10min-local-2026-11-17.md`（生产全容量仍挂 PERF-003/性能集群）。
+- **CI**：`contract-and-domain` 新增 `charts` job（azure/setup-helm + 两个 chart 矩阵脚本），
+  NetworkPolicy/PrometheusRule 门禁从手工脚本升级为每次 push 强制。
+- **安全硬化**：`platform_api` 心跳 `X-Edge-Key` 改 `subtle.ConstantTimeCompare`（无行为变化）。
+- 证据/文档：backlog 增 P9-012/013（DONE）→ 终态 **DONE×101 / REVIEW×4 / BLOCKED×6**。

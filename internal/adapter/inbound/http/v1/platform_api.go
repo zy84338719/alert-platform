@@ -5,6 +5,7 @@ package v1
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -37,7 +38,10 @@ func SetEdgeAPIKey(key string) { EdgeAPIKey = key }
 func RegisterPlatformAPI(h *server.Hertz) {
 	// Edge waterline heartbeat (called by the edge uploader loop).
 	h.POST("/edge/v1/heartbeat", func(ctx context.Context, c *app.RequestContext) {
-		if EdgeAPIKey == "" || string(c.GetHeader("X-Edge-Key")) != EdgeAPIKey {
+		// Constant-time compare: the shared secret guards a waterline write.
+		got := string(c.GetHeader("X-Edge-Key"))
+		if EdgeAPIKey == "" || len(got) != len(EdgeAPIKey) ||
+			subtle.ConstantTimeCompare([]byte(got), []byte(EdgeAPIKey)) != 1 {
 			c.JSON(http.StatusUnauthorized, map[string]string{"message": "bad edge key"})
 			return
 		}
@@ -101,18 +105,18 @@ func RegisterPlatformAPI(h *server.Hertz) {
 			return
 		}
 		type ev struct {
-			EventID    string            `json:"event_id"`
-			TransportID string           `json:"transport_id"`
-			Kind       string            `json:"kind"`
-			Signal     string            `json:"signal"`
-			Severity   string            `json:"severity,omitempty"`
-			AlertName  string            `json:"alert_name"`
-			ClusterID  string            `json:"cluster_id,omitempty"`
-			EntityType string            `json:"entity_type,omitempty"`
-			EntityUID  string            `json:"entity_uid,omitempty"`
-			Namespace  string            `json:"namespace,omitempty"`
-			Labels     map[string]string `json:"labels,omitempty"`
-			OccurredAt string            `json:"occurred_at"`
+			EventID     string            `json:"event_id"`
+			TransportID string            `json:"transport_id"`
+			Kind        string            `json:"kind"`
+			Signal      string            `json:"signal"`
+			Severity    string            `json:"severity,omitempty"`
+			AlertName   string            `json:"alert_name"`
+			ClusterID   string            `json:"cluster_id,omitempty"`
+			EntityType  string            `json:"entity_type,omitempty"`
+			EntityUID   string            `json:"entity_uid,omitempty"`
+			Namespace   string            `json:"namespace,omitempty"`
+			Labels      map[string]string `json:"labels,omitempty"`
+			OccurredAt  string            `json:"occurred_at"`
 		}
 		out := make([]ev, 0, len(rows))
 		for _, r := range rows {
@@ -163,9 +167,9 @@ func RegisterPlatformAPI(h *server.Hertz) {
 			out = append(out, nv{
 				ID: r.ID, ChannelID: r.ChannelID, Receiver: r.Receiver, Status: r.Status,
 				Attempts: r.Attempts, Type: r.Type,
-				CreatedAt: r.CreatedAt.UTC().Format(time.RFC3339),
+				CreatedAt:   r.CreatedAt.UTC().Format(time.RFC3339),
 				NextAttempt: r.NextAttemptAt.UTC().Format(time.RFC3339),
-				Message:   r.Message,
+				Message:     r.Message,
 			})
 		}
 		c.JSON(http.StatusOK, map[string]any{"tasks": out})

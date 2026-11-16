@@ -11,6 +11,10 @@ PG_DSN="${ALERT_TEST_PG_DSN:-postgres://postgres:postgres@127.0.0.1:55432/alert_
 PG_CONTAINER="${ALERT_PG_CONTAINER:-dev-postgres-1}"
 BROKERS="${ALERT_TEST_KAFKA_BROKERS:-127.0.0.1:19092}"
 RUN_ID="$(date +%s)"
+# Durations overridable for long-run evidence (PERF-003: 10min steady).
+STEADY_DURATION="${STEADY_DURATION:-120s}"
+BURST_DURATION="${BURST_DURATION:-60s}"
+DRAIN_WAIT="${DRAIN_WAIT:-5}"
 DB="alert_perf_${RUN_ID}"
 WORK=".dev/perf-${RUN_ID}"
 mkdir -p "$WORK"
@@ -55,15 +59,15 @@ ALERT_PG_DSN="$TARGET_DSN" ALERT_KAFKA_BROKERS="$BROKERS" ALERT_KAFKA_TOPIC="ale
   "$WORK/worker" > "$WORK/worker.log" 2>&1 & WORKER_PID=$!
 for i in $(seq 1 50); do curl -sf "http://127.0.0.1:18400/healthz" >/dev/null 2>&1 && break; sleep 0.2; done
 
-echo "==> steady 100 EPS for 120s"
-"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 100 -d 120s -pg "$TARGET_DSN" \
+echo "==> steady 100 EPS for ${STEADY_DURATION}"
+"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 100 -d "$STEADY_DURATION" -pg "$TARGET_DSN" \
   -token "$PERF_TOKEN" -tenant "$PERF_TENANT" -source "$PERF_SOURCE" | tee "$WORK/steady.txt"
-echo "==> burst 2000 EPS for 60s (local scale; full 10min on perf cluster)"
-"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 2000 -d 60s -burst -pg "$TARGET_DSN" \
+echo "==> burst 2000 EPS for ${BURST_DURATION} (local scale; full 10min on perf cluster)"
+"$WORK/loadgen" -api http://127.0.0.1:18400 -eps 2000 -d "$BURST_DURATION" -burst -pg "$TARGET_DSN" \
   -token "$PERF_TOKEN" -tenant "$PERF_TENANT" -source "$PERF_SOURCE" | tee "$WORK/burst.txt"
 
-echo "==> post-run invariants"
-sleep 5
+echo "==> post-run invariants (drain wait ${DRAIN_WAIT}s)"
+sleep "$DRAIN_WAIT"
 docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qtAc "SELECT 'instances='||count(*) FROM alert_instances"
 docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qtAc "SELECT 'receipts='||count(*) FROM event_receipts"
 docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qtAc "SELECT 'transitions='||count(*) FROM alert_transitions"

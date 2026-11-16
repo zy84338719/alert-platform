@@ -50,6 +50,18 @@ jobs:
       - run: python3 scripts/check_deps.py
       - run: python3 scripts/validate_package.py
 
+  # P9: chart matrices (NetworkPolicy/PrometheusRule) enforced on every push —
+  # previously manual-only local scripts.
+  charts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+      - run: python3 scripts/test_chart_policies.py
+      - run: python3 scripts/test_chart_rules.py
+
   # BASE-004: multi-arch image + SBOM. Every run builds linux/amd64+arm64
   # with SBOM/provenance attestations and uploads the OCI archive; pushing to
   # the dev registry happens only on main AND only when DEV_REGISTRY is
