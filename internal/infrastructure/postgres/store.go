@@ -820,9 +820,10 @@ func (s *Store) enqueueNotifications(ctx context.Context, tx pgx.Tx, ev *eventv1
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO notification_outbox
 				(id, tenant_id, subject_type, alert_instance_id, idempotency_key,
-				 channel_id, receiver_id, policy_version, payload, status, authority_generation)
+				 channel_id, receiver_id, policy_version, payload, status, authority_generation, created_mode)
 			VALUES ($1,$2,'alert_instance',$3,$4,$5,$6,$7,$8,$9,
-			        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0))
+			        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0),
+			        COALESCE((SELECT mode FROM notification_authority WHERE id=1), ''))
 			ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
 			uuid.NewString(), ev.GetTenantId(), instanceID, key,
 			rcv.ChannelID, rcv.ReceiverID, dec.PolicyVersion, payload, status); err != nil {
@@ -904,10 +905,11 @@ func (s *Store) SyncNotifyAuthority(ctx context.Context, desiredMode string) (no
 // ClaimNotifyTasks claims pending/retrying tasks with FOR UPDATE SKIP LOCKED
 // plus a lease; expired leases (crashed senders) are re-claimed and their
 // attempts counter keeps climbing — at-least-once with an audit trail.
-// generation (P8-P0-01) scopes the claim to the current ownership era: tasks
-// enqueued before the authority ledger (generation 0) or in an earlier era
-// are never claimed, so a shadow→active switch cannot replay history.
-func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]notify.Task, error) {
+// created_mode (R27) scopes the claim to tasks created while authority was
+// ACTIVE: shadow-era observations and pre-ledger rows are never claimed, while
+// active-era tasks interrupted by a shadow switch deliver after the return
+// (REL-002 phase 4). authority_generation remains an audit marker only.
+func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]notify.Task, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, err
@@ -920,7 +922,7 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 			WHERE ((o.status IN ('pending','retry_scheduled') AND o.next_attempt_at <= now()
 			        AND (o.lease_until IS NULL OR o.lease_until < now()))
 			    OR (o.status = 'sending' AND o.lease_until < now()))
-			  AND o.authority_generation = $4
+			  AND o.created_mode = 'active'
 			ORDER BY o.next_attempt_at
 			LIMIT $1
 			FOR UPDATE OF o SKIP LOCKED
@@ -930,17 +932,17 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 		    lease_token=gen_random_uuid(), updated_at=now()
 		FROM claimed WHERE o.id = claimed.id
 		RETURNING o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
-			o.created_at, o.lease_token::text, o.authority_generation,
+			o.created_at, o.lease_token::text, o.authority_generation, o.created_mode,
 			(SELECT type FROM notification_channels c WHERE c.id = o.channel_id),
 			(SELECT config FROM notification_channels c WHERE c.id = o.channel_id)`,
-		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())), generation)
+		limit, "notify-worker", fmt.Sprintf("%d seconds", int(lease.Seconds())))
 	if err != nil {
 		return nil, err
 	}
 	var out []notify.Task
 	for rows.Next() {
 		var t notify.Task
-		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.LeaseToken, &t.AuthorityGeneration, &t.ChannelType, &t.ChannelCfg); err != nil {
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.ChannelID, &t.ReceiverID, &t.Payload, &t.Attempts, &t.CreatedAt, &t.LeaseToken, &t.AuthorityGeneration, &t.CreatedMode, &t.ChannelType, &t.ChannelCfg); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1380,9 +1382,10 @@ func (s *Store) RecordEscalation(ctx context.Context, cand escalation.Escalation
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO notification_outbox
 			(id, tenant_id, subject_type, incident_id, idempotency_key, channel_id,
-			 receiver_id, policy_version, payload, status, authority_generation)
+			 receiver_id, policy_version, payload, status, authority_generation, created_mode)
 		VALUES ($1,$2,'incident',$3,$4,$5,'oncall',$6,$7,'pending',
-		        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0))
+		        COALESCE((SELECT generation FROM notification_authority WHERE id=1), 0),
+			        COALESCE((SELECT mode FROM notification_authority WHERE id=1), ''))
 		ON CONFLICT (tenant_id, idempotency_key) DO NOTHING`,
 		uuid.NewString(), cand.TenantID, cand.IncidentID, key, channelID,
 		policyVersion, payload); err != nil {
@@ -1446,11 +1449,11 @@ func (s *Store) CorrelateOnce(ctx context.Context) (int, error) {
 
 // CountPendingNotifyTasks reports the current-era pending/retry depth
 // (P9-OBS-04 gauge; sampled every 30s by the notify loop, not per tick).
-func (s *Store) CountPendingNotifyTasks(ctx context.Context, generation int64) (int64, error) {
+func (s *Store) CountPendingNotifyTasks(ctx context.Context) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*) FROM notification_outbox
-		WHERE status IN ('pending','retry_scheduled') AND authority_generation=$1`, generation).Scan(&n)
+		WHERE status IN ('pending','retry_scheduled') AND created_mode='active'`).Scan(&n)
 	return n, err
 }
 

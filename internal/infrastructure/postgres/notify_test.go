@@ -75,7 +75,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
 	channelID := "abab0000-0000-0000-0000-000000000001"
 	seedChannel(t, pool, channelID)
-	auth := activeAuthority(t, store)
+	activeAuthority(t, store)
 
 	// 1) firing -> task enqueued via the default channel.
 	if _, err := store.ApplyEvent(ctx, notifyEvent("np-1", eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)); err != nil {
@@ -92,7 +92,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 2) claim (SKIP LOCKED) marks sending + bumps attempts.
-	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("claim: %v (%d)", err, len(tasks))
 	}
@@ -100,7 +100,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		t.Fatalf("claimed task: %+v", tasks[0])
 	}
 	// A second claim while the lease is live finds nothing (no double send).
-	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("double claim leaked tasks: %v (%d)", err, len(again))
 	}
@@ -110,7 +110,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		UPDATE notification_outbox SET lease_until = now() - interval '2 hours' WHERE id=$1`, taskID); err != nil {
 		t.Fatal(err)
 	}
-	reclaimed, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	reclaimed, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(reclaimed) != 1 {
 		t.Fatalf("lease-expiry reclaim: %v (%d)", err, len(reclaimed))
 	}
@@ -425,23 +425,23 @@ func TestSuppressNotifyAtSendMultiRuleMatrix(t *testing.T) {
 	})
 }
 
-// P8-P0-01：真实 PG 上的 generation 隔离 ——
-// ① 首次初始化强制开启新 generation（迁移种子 gen1 → sync 后 gen2），
-//
-//	迁移前（gen0）任务永不被领取（保守：不冒险补发 shadow 历史）；
-//
-// ② 每次模式切换 generation+1，旧 generation 的 pending 任务不再可领；
-// ③ 任务入队时 stamp 当前 generation（enqueue 与 authority 同源）。
-func TestClaimNotifyTasksGenerationIsolation(t *testing.T) {
+// R27（真实 PG）：可投递性由"创建时的授权模式"决定 ——
+// ① active 纪元入队 → created_mode='active'，可领；
+// ② pre-ledger（”）永不可领；
+// ③ shadow 纪元任务切回 active 后不补投（无风暴）；
+// ④ active 期任务被 shadow 打断 → 回 active 后补投恰一次（REL-002 phase 4）。
+// 断言为成员关系式：reset 会恢复其他任务，逐名断言更稳。
+func TestClaimNotifyTasksCreatedModeIsolation(t *testing.T) {
 	store, pool := newNotifyTest(t)
 	ctx := context.Background()
 	const channelID = "abab0000-0000-0000-0000-000000000001"
 	seedChannel(t, pool, channelID)
-	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	activeAuthority(t, store)
+	at := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
 
 	mkTask := func(t *testing.T, name string) {
 		t.Helper()
-		ev := notifyEvent("np-gen-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+		ev := notifyEvent("np-cm-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
 		ev.AlertName = name
 		ev.EventKey = "ek-" + name
 		ev.Source.ExternalRuleId = "rule-" + name
@@ -449,90 +449,111 @@ func TestClaimNotifyTasksGenerationIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	generationOf := func(t *testing.T, name string) int64 {
+	modeOf := func(t *testing.T, name string) string {
 		t.Helper()
-		var gen int64
+		var cm string
 		if err := pool.QueryRow(ctx, `
-			SELECT o.authority_generation FROM notification_outbox o
+			SELECT o.created_mode FROM notification_outbox o
 			JOIN alert_instances i ON i.id = o.alert_instance_id
-			WHERE i.name = $1`, name).Scan(&gen); err != nil {
-			t.Fatalf("generation of %s: %v", name, err)
+			WHERE i.name = $1`, name).Scan(&cm); err != nil {
+			t.Fatalf("created_mode of %s: %v", name, err)
 		}
-		return gen
+		return cm
 	}
-	reset := func(t *testing.T) {
+	names := func(rows []notify.Task) []string {
+		var out []string
+		for _, r := range rows {
+			var n string
+			if err := pool.QueryRow(ctx, `
+				SELECT i.name FROM alert_instances i
+				JOIN notification_outbox o ON o.alert_instance_id = i.id
+				WHERE o.id = $1`, r.ID).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	setPending := func(t *testing.T, name string) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET status='pending', lease_until=NULL, lease_token=NULL`); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET status='pending', lease_until=NULL, lease_token=NULL
+			WHERE id IN (SELECT o.id FROM notification_outbox o JOIN alert_instances i ON i.id=o.alert_instance_id WHERE i.name=$1)`, name); err != nil {
 			t.Fatal(err)
 		}
 	}
-
-	// ① 迁移后、首次 sync 前入队：任务 stamp 的是种子 generation 1。
-	mkTask(t, "PreInit")
-	if gen := generationOf(t, "PreInit"); gen != 1 {
-		t.Fatalf("pre-init task generation = %d, want 1 (migration seed)", gen)
+	claim := func() []notify.Task {
+		rows, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
 	}
 
-	// 首次初始化（active）：强制新 generation（2），且不收养 pre-authority 任务。
-	auth := activeAuthority(t, store)
-	if auth.Generation != 2 {
-		t.Fatalf("first-init generation = %d, want 2 (never adopt pre-authority rows)", auth.Generation)
+	// ① active 纪元入队 → created_mode='active'，可领。
+	mkTask(t, "Active1")
+	if cm := modeOf(t, "Active1"); cm != "active" {
+		t.Fatalf("created_mode = %q, want active", cm)
 	}
-	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
-	if err != nil {
+	if got := names(claim()); len(got) != 1 || got[0] != "Active1" {
+		t.Fatalf("claimed %v, want [Active1]", got)
+	}
+
+	// ② pre-ledger（created_mode=''）永不可领。
+	mkTask(t, "PreLedger")
+	if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET created_mode='' WHERE id IN (
+		SELECT o.id FROM notification_outbox o JOIN alert_instances i ON i.id=o.alert_instance_id WHERE i.name='PreLedger')`); err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 0 {
-		t.Fatalf("first-init claimed %d pre-authority tasks, want 0 (no history replay)", len(tasks))
+	for _, n := range names(claim()) {
+		if n == "PreLedger" {
+			t.Fatal("pre-ledger row was claimed (created_mode='' must never deliver)")
+		}
 	}
 
-	// ② 初始化后入队：stamp 当前 generation（2），可领取。
-	mkTask(t, "Gen2")
-	if gen := generationOf(t, "Gen2"); gen != 2 {
-		t.Fatalf("post-init task generation = %d, want 2", gen)
-	}
-	tasks, err = store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
-	if err != nil || len(tasks) != 1 {
-		t.Fatalf("gen2 claim: %d tasks err=%v", len(tasks), err)
-	}
-	reset(t)
-
-	// ③ 切 shadow（gen3）再切回 active（gen4）：gen2/gen3 时代任务永不补发。
+	// ③ shadow 纪元任务：切 shadow 入队 → 切回 active → 不补投；新任务可领。
 	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeShadow); err != nil {
 		t.Fatal(err)
 	}
-	auth3, err := store.SyncNotifyAuthority(ctx, notify.ModeActive)
-	if err != nil {
+	mkTask(t, "ShadowEra")
+	if cm := modeOf(t, "ShadowEra"); cm != "shadow" {
+		t.Fatalf("created_mode = %q, want shadow", cm)
+	}
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeActive); err != nil {
 		t.Fatal(err)
 	}
-	if auth3.Generation != 4 {
-		t.Fatalf("generation after two switches = %d, want 4", auth3.Generation)
+	mkTask(t, "Fresh")
+	hasFresh, hasShadow := false, false
+	for _, n := range names(claim()) {
+		if n == "Fresh" {
+			hasFresh = true
+		}
+		if n == "ShadowEra" {
+			hasShadow = true
+		}
 	}
-	tasks, err = store.ClaimNotifyTasks(ctx, 10, time.Minute, auth3.Generation)
-	if err != nil {
-		t.Fatal(err)
+	if !hasFresh {
+		t.Fatal("Fresh (active era) must be claimable after return")
 	}
-	if len(tasks) != 0 {
-		t.Fatalf("active-after-shadow claimed %d old-era tasks, want 0 (storm guard)", len(tasks))
+	if hasShadow {
+		t.Fatal("ShadowEra task was claimed (shadow era must never replay)")
 	}
 
-	// 新 era 的任务正常领取。
-	mkTask(t, "Gen4")
-	if gen := generationOf(t, "Gen4"); gen != 4 {
-		t.Fatalf("post-switch task generation = %d, want 4", gen)
-	}
-	tasks, err = store.ClaimNotifyTasks(ctx, 10, time.Minute, auth3.Generation)
-	if err != nil || len(tasks) != 1 {
-		t.Fatalf("gen4 claim: %d tasks err=%v", len(tasks), err)
-	}
-
-	// 幂等：同 mode 重复 sync 不再 bump（多副本 worker 安全）。
-	same, err := store.SyncNotifyAuthority(ctx, notify.ModeActive)
-	if err != nil {
+	// ④ active 期任务被 shadow 打断 → 回 active 后补投恰一次。
+	setPending(t, "Active1") // active 期任务重新入队（模拟被 shadow 打断的在途任务）
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeShadow); err != nil {
 		t.Fatal(err)
 	}
-	if same.Generation != 4 {
-		t.Fatalf("same-mode sync bumped generation to %d, want 4", same.Generation)
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeActive); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, n := range names(claim()) {
+		if n == "Active1" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("Active1 claimed %d times, want exactly 1 (deliver after return, no duplicates)", count)
 	}
 }
 
@@ -545,7 +566,7 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 	const channelID = "abab0000-0000-0000-0000-000000000001"
 	seedChannel(t, pool, channelID)
 	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
-	auth := activeAuthority(t, store)
+	activeAuthority(t, store)
 
 	ev := notifyEvent("np-fence", eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
 	if _, err := store.ApplyEvent(ctx, ev); err != nil {
@@ -553,7 +574,7 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 	}
 
 	// Worker A 认领。
-	tasksA, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	tasksA, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(tasksA) != 1 {
 		t.Fatalf("claim A: %d tasks err=%v", len(tasksA), err)
 	}
@@ -566,7 +587,7 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET lease_until = now() - interval '1 second'`); err != nil {
 		t.Fatal(err)
 	}
-	tasksB, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	tasksB, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(tasksB) != 1 {
 		t.Fatalf("claim B: %d tasks err=%v", len(tasksB), err)
 	}
@@ -614,7 +635,7 @@ func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
 	ctx := context.Background()
 	const channelID = "abab0000-0000-0000-0000-000000000001"
 	seedChannel(t, pool, channelID)
-	auth := activeAuthority(t, store)
+	activeAuthority(t, store)
 	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
 
 	for _, name := range []string{"RenewA", "RenewB"} {
@@ -628,7 +649,7 @@ func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
 	}
 
 	// Worker A 认领两条（短租约），并像 deliverOne 那样在执行前续租第一条。
-	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Second, auth.Generation)
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Second)
 	if err != nil || len(tasks) != 2 {
 		t.Fatalf("claim A: %d tasks err=%v", len(tasks), err)
 	}
@@ -643,7 +664,7 @@ func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
 	}
 
 	// Worker B 重领：只能拿到未续租的那条。
-	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	again, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil || len(again) != 1 || again[0].ID != expiring.ID {
 		t.Fatalf("reclaim = %+v (err=%v), want only the expired task %s", again, err, expiring.ID)
 	}
@@ -653,7 +674,7 @@ func TestRenewNotifyLeaseProtectsFromReclaim(t *testing.T) {
 		t.Fatalf("stale renew err = %v, want ErrStaleNotifyLease", err)
 	}
 	// 已续租任务仍归 A：B 的再次认领不会包含它。
-	third, err := store.ClaimNotifyTasks(ctx, 10, time.Minute, auth.Generation)
+	third, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -61,7 +61,9 @@ func main() {
 	}
 	defer pool.Close()
 	authnStore := postgres.NewAuthnStore(pool)
-	httpv1.SetSourceRegistry(sourcereg.NewService(postgres.NewSourceStore(pool)))
+	// P9-R29: read-through credential cache — ingest auth must survive a PG
+	// outage (positive lookups cached 30s; management writes invalidate).
+	httpv1.SetSourceRegistry(sourcereg.NewService(sourcereg.NewCachedStore(postgres.NewSourceStore(pool), 30*time.Second)))
 	queryStore := postgres.NewQueryStore(pool)
 	httpv1.SetQuerySvc(query.NewService(queryStore))
 	// P9-CH-01: history reads hit PG inside the retention window and the

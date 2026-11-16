@@ -87,16 +87,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 12 {
-		t.Fatalf("version after first Up = %d, want 12 (0001..0012: P9 archive cursor)", v1)
+	if v1 != 13 {
+		t.Fatalf("version after first Up = %d, want 13 (0001..0013: R27 outbox created_mode)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 12 {
-		t.Fatalf("version after second Up = %d, want 12", v2)
+	if v2 != 13 {
+		t.Fatalf("version after second Up = %d, want 13", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the
@@ -126,6 +126,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 		"0010_edge_uplink_credentials.up.sql",
 		"0011_alert_instance_active_unique.up.sql",
 		"0012_archive_cursor.up.sql",
+		"0013_outbox_created_mode.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

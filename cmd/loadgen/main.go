@@ -111,25 +111,37 @@ func main() {
 					"events":   chunk,
 				})
 				t0 := time.Now()
-				req, rerr := http.NewRequest(http.MethodPost, *api+"/ingest/v1/events:batch", bytes.NewReader(body))
-				if rerr != nil {
-					mu.Lock()
-					pushErrs++
-					mu.Unlock()
-					return
-				}
-				req.Header.Set("Content-Type", "application/json")
-				if *token != "" {
-					req.Header.Set("Authorization", "Bearer "+*token)
-				}
-				resp, err := client.Do(req)
-				if err != nil || resp.StatusCode != 202 {
-					mu.Lock()
-					pushErrs++
-					mu.Unlock()
+				// Producer semantics (R28): a failed batch is RETRIED with the
+				// same batch_id (bounded) instead of being silently dropped —
+				// the T-010 drill relies on "producers retry" for convergence.
+				var resp *http.Response
+				var derr error
+				for attempt := 0; attempt < 5; attempt++ {
+					if attempt > 0 {
+						time.Sleep(time.Duration(attempt) * time.Second)
+					}
+					req2, rerr2 := http.NewRequest(http.MethodPost, *api+"/ingest/v1/events:batch", bytes.NewReader(body))
+					if rerr2 != nil {
+						derr = rerr2
+						continue
+					}
+					req2.Header.Set("Content-Type", "application/json")
+					if *token != "" {
+						req2.Header.Set("Authorization", "Bearer "+*token)
+					}
+					resp, derr = client.Do(req2)
+					if derr == nil && resp.StatusCode == 202 {
+						break
+					}
 					if resp != nil {
 						_ = resp.Body.Close()
 					}
+					derr = fmt.Errorf("status %s", http.StatusText(statusOf(resp)))
+				}
+				if derr != nil || resp == nil || resp.StatusCode != 202 {
+					mu.Lock()
+					pushErrs++
+					mu.Unlock()
 					return
 				}
 				_ = resp.Body.Close()
@@ -223,4 +235,11 @@ func sampleE2E(dsn string, pushedAt map[string]time.Time) []time.Duration {
 		rows.Close()
 	}
 	return out
+}
+
+func statusOf(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }

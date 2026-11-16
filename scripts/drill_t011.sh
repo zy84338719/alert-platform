@@ -18,6 +18,10 @@ TENANT="dddd1111-0000-0000-0000-0000000000aa"
 SOURCE_ID="dddd1111-0000-0000-0000-0000000000bb"
 SRC_TOKEN="aps_t011_src"
 SRC_HASH=$(python3 -c "import hashlib;print(hashlib.sha256('$SRC_TOKEN'.encode()).hexdigest())")
+# P8-P0-02: the edge uploads via its UPLINK identity (X-Edge-Id + token),
+# scoped to the allowed source set — not via a raw unregistered key.
+EDGE_TOKEN="aps_edge-uplink-t011"
+EDGE_HASH=$(python3 -c "import hashlib;print(hashlib.sha256('$EDGE_TOKEN'.encode()).hexdigest())")
 TOPIC="alert.t011.${RUN_ID}"
 
 cleanup() {
@@ -41,7 +45,9 @@ go run ./cmd/alert-migrate -dsn "$TARGET_DSN" >/dev/null
 docker exec "$PG_CONTAINER" psql -U postgres -d "$DB" -qc "
 INSERT INTO alert_sources (tenant_id, source_id, name, source_type, vendor_version, adapter_version, cluster_id, last_seen_at, health_status)
 VALUES ('$TENANT','$SOURCE_ID','t011','deepflow','7.2.3','x','prod-studio', now(), 'ok');
-INSERT INTO source_credentials (tenant_id, source_id, token_hash) VALUES ('$TENANT','$SOURCE_ID','$SRC_HASH');" >/dev/null
+INSERT INTO source_credentials (tenant_id, source_id, token_hash) VALUES ('$TENANT','$SOURCE_ID','$SRC_HASH');
+INSERT INTO edge_uplink_credentials (edge_id, tenant_id, token_hash, allowed_source_ids)
+VALUES ('edge-t011','$TENANT','$EDGE_HASH', ARRAY['$SOURCE_ID']::uuid[]);" >/dev/null
 docker exec dev-kafka-1 kafka-topics --bootstrap-server localhost:29092 --create --topic "$TOPIC" --partitions 1 >/dev/null 2>&1 || true
 
 step "启动 center(api+worker) + edge(gateway)"
@@ -64,6 +70,7 @@ EOF
 ALERT_EDGE_ADDR=":18302" ALERT_EDGE_MODE=gateway ALERT_EDGE_WAL_DIR="$WORK/wal" \
   ALERT_EDGE_SOURCES_FILE="$WORK/edge-sources.json" ALERT_API_ORIGIN="http://127.0.0.1:18300" \
   ALERT_EDGE_API_KEY="edge-key-t011" ALERT_HEARTBEAT_SOURCE_ID="$SOURCE_ID" \
+  ALERT_EDGE_UPLINK_TOKEN="$EDGE_TOKEN" ALERT_EDGE_ID="edge-t011" \
   ALERT_HUATUO_TENANT_ID="$TENANT" LOG_LEVEL=warn \
   "$WORK/edge" > "$WORK/edge.log" 2>&1 & EDGE_PID=$!
 for p in 18300 18301 18302; do

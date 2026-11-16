@@ -50,6 +50,10 @@ func NewService(store Store) *Service {
 	return &Service{store: store}
 }
 
+// storeCallTimeout bounds one ApplyEvent transaction; a dependency outage
+// must surface as an error (fail-stop) rather than an indefinite pool wait.
+const storeCallTimeout = 15 * time.Second
+
 // Handle decodes one canonical event and applies it transactionally.
 // The message header trace_id is promoted into the context so every log line
 // in the processing path correlates with the producing side (BASE-007).
@@ -65,7 +69,12 @@ func (s *Service) Handle(ctx context.Context, msg IncomingMessage) error {
 		return Permanent(fmt.Errorf("decode canonical event: %w", err))
 	}
 	start := time.Now()
-	duplicate, err := s.store.ApplyEvent(ctx, ev)
+	// Bounded store call (R28): with the database fully down, pgxpool.Acquire
+	// can block indefinitely — without this deadline the "fail-stop" critical
+	// task would HANG instead of surfacing the error (found by T-010 drill).
+	callCtx, cancel := context.WithTimeout(ctx, storeCallTimeout)
+	duplicate, err := s.store.ApplyEvent(callCtx, ev)
+	cancel()
 	observeDuration(time.Since(start))
 	if err != nil {
 		// Permanent classes: the payload itself is unusable (contract

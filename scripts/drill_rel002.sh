@@ -6,9 +6,13 @@
 #   Phase 2 RECON   — shadow_compare.py matches platform vs upstream records;
 #                     differences must be explainable (shadow suppression).
 #   Phase 3 CUTOVER — switch to active: a new alert IS delivered.
-#   Phase 4 ROLLBACK— back to shadow with a pending task in flight: the task
-#                     is NOT lost (stays queued) and is NOT duplicated; after
-#                     switching back to active it delivers exactly once.
+#   Phase 4 ROLLBACK— two deterministic scenarios (R27 semantics: deliverability
+#                     is decided by the authority mode AT ENQUEUE TIME):
+#     4a) a task created while ACTIVE is interrupted by the rollback: not lost,
+#         not duplicated, delivers exactly once after authority returns;
+#     4b) a task created while SHADOW (observation era) is NEVER replayed after
+#         the cutover — that would duplicate what the upstream already sent
+#         (P0-07 storm guard).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -161,27 +165,56 @@ C_SENT=$(psql_q "SELECT count(*) FROM notification_outbox WHERE payload->>'messa
 [ "$C_SENT" -ge 1 ] || fail "active 通知未标记 sent"
 echo "    active：新告警送达 mock 渠道、status=sent ✓"
 
-step "④ ROLLBACK：切回 shadow，期间新任务积压不丢、恢复后补投恰 1 次"
-stop_stack; start_stack shadow
-sleep 3
-# fired while shadow holds authority: must stay pending untouched
+step "④a ROLLBACK：active 期在途任务被 shadow 打断 → 不丢、恢复后补投恰 1 次"
+# Deterministic in-flight scenario: take the mock channel DOWN, then push r-2
+# while authority is ACTIVE (created_mode=active). Delivery fails -> the task
+# parks in retry_scheduled. Rollback to shadow must not lose/deliver it; the
+# return to active (channel back up) must deliver it exactly once.
+kill "$HOOK_PID" 2>/dev/null || true; wait "$HOOK_PID" 2>/dev/null || true
 push "r-2"
-wait_notify 8 || true
+wait_notify 7 || true
+for i in $(seq 1 30); do
+  st=$(psql_q "SELECT status FROM notification_outbox o WHERE o.payload->>'message' LIKE '%r-2%' LIMIT 1")
+  [ "$st" = "retry_scheduled" ] && break
+  sleep 0.5
+done
+[ "$st" = "retry_scheduled" ] || fail "r-2 未进入待重试状态（got: $st）"
+stop_stack
+start_stack shadow
 sleep 3
 R_SENT=$(psql_q "SELECT count(*) FROM notification_outbox o WHERE o.payload->>'message' LIKE '%r-2%' AND o.status='sent'")
-R_PENDING=$(psql_q "SELECT count(*) FROM notification_outbox o WHERE o.payload->>'message' LIKE '%r-2%' AND o.status='pending'")
-[ "$R_SENT" = "0" ] || fail "回滚后 r-2 被外发 $R_SENT 次（切换期双发！）"
-[ "$R_PENDING" -ge 1 ] || fail "回滚后 r-2 任务丢失（待投递必须保留）"
 DELIV_R=$(grep -c 'r-2' "$WORK/deliveries.jsonl" 2>/dev/null || true)
+[ "$R_SENT" = "0" ] || fail "回滚期 r-2 被外发 $R_SENT 次"
 [ "$DELIV_R" = "0" ] || fail "shadow 期 r-2 送达 mock 渠道 $DELIV_R 次"
-# switch back to active: the held task delivers EXACTLY ONCE
-stop_stack; start_stack active
+R_HELD=$(psql_q "SELECT count(*) FROM notification_outbox o WHERE o.payload->>'message' LIKE '%r-2%' AND o.status IN ('pending','retry_scheduled')")
+[ "$R_HELD" -ge 1 ] || fail "回滚后 r-2 任务丢失（待投递必须保留）"
+stop_stack
+python3 "$WORK/hook.py" "$WORK" "$HOOK_PORT" & HOOK_PID=$!
+sleep 0.5
+start_stack active
 for i in $(seq 1 50); do curl -sf http://127.0.0.1:18800/healthz >/dev/null 2>&1 && break; sleep 0.2; done
 for i in $(seq 1 60); do grep -q 'r-2' "$WORK/deliveries.jsonl" 2>/dev/null && break; sleep 0.5; done
 grep -q 'r-2' "$WORK/deliveries.jsonl" || fail "恢复 active 后积压任务未补投"
 sleep 2
 R_DELIVERED=$(grep -c 'r-2' "$WORK/deliveries.jsonl")
 [ "$R_DELIVERED" = "1" ] || fail "r-2 投递 $R_DELIVERED 次, want 恰 1（不重发）"
-echo "    回滚：r-2 shadow 期保持 pending（不丢、不外发）→ 恢复后补投恰 1 次（不重发）✓"
+echo "    ④a 回滚：active 期 r-2 进入 retry（不丢、不外发）→ 恢复后补投恰 1 次（不重发）✓"
+
+step "④b shadow 期任务永不补投（P0-07 风暴守卫）"
+stop_stack
+start_stack shadow
+sleep 2
+push "r-3"
+wait_notify 9 || true
+sleep 2
+stop_stack
+start_stack active
+for i in $(seq 1 50); do curl -sf http://127.0.0.1:18800/healthz >/dev/null 2>&1 && break; sleep 0.2; done
+sleep 4
+DELIV_R3=$(grep -c 'r-3' "$WORK/deliveries.jsonl" 2>/dev/null || true)
+[ "$DELIV_R3" = "0" ] || fail "shadow 期任务 r-3 在切回 active 后被补投 $DELIV_R3 次（P0-07 风暴！）"
+R3_HELD=$(psql_q "SELECT count(*) FROM notification_outbox o WHERE o.payload->>'message' LIKE '%r-3%' AND o.status IN ('pending','retry_scheduled')")
+[ "$R3_HELD" -ge 1 ] || fail "r-3 任务状态被污染（应保持 pending/retry 供审计）"
+echo "    ④b 风暴守卫：shadow 期 r-3 切回 active 后 0 送达、保持 pending/retry（审计可查）✓"
 
 echo "REL-002 DRILL PASS: shadow 零干扰 → 对账 5/5 → 切换生效 → 回滚不丢不重发"

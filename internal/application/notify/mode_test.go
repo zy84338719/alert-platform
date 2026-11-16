@@ -39,7 +39,7 @@ func TestNotifyModes(t *testing.T) {
 
 	// ACTIVE: delivered.
 	svc, st, sender := newSvc(ModeActive)
-	st.tasks = []Task{{ID: "t1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	st.tasks = []Task{{ID: "t1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive}}
 	svc.DeliverOnce(context.Background())
 	if sender.count() != 1 || len(st.finished) != 1 || !st.finished[0].Sent {
 		t.Fatalf("active mode: sender=%d finished=%+v", sender.count(), st.finished)
@@ -48,7 +48,7 @@ func TestNotifyModes(t *testing.T) {
 	// SHADOW: recorded to the audit trail, tasks NOT claimed and NOT mutated —
 	// the queue stays pending so a later switch to active delivers exactly once.
 	svc, st, sender = newSvc(ModeShadow)
-	st.tasks = []Task{{ID: "t2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	st.tasks = []Task{{ID: "t2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeShadow}}
 	svc.DeliverOnce(context.Background())
 	if sender.count() != 0 {
 		t.Fatalf("shadow mode sent %d notifications (double-send risk!)", sender.count())
@@ -65,7 +65,7 @@ func TestNotifyModes(t *testing.T) {
 
 	// OFF: nothing claimed, nothing sent.
 	svc, st, sender = newSvc(ModeOff)
-	st.tasks = []Task{{ID: "t3", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	st.tasks = []Task{{ID: "t3", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeShadow}}
 	svc.DeliverOnce(context.Background())
 	if sender.count() != 0 || len(st.claimed) != 0 || len(st.finished) != 0 {
 		t.Fatalf("off mode: claimed=%d finished=%d", len(st.claimed), len(st.finished))
@@ -116,12 +116,13 @@ func (b *BaseStore) SyncNotifyAuthority(_ context.Context, desiredMode string) (
 	return Authority{Mode: b.authMode, Generation: b.authGen}, nil
 }
 
-func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Duration, generation int64) ([]Task, error) {
-	// Model the real store's generation scoping: older-era tasks are never
-	// claimed (no history replay), only the current generation is deliverable.
+func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Duration) ([]Task, error) {
+	// Model the real store's created-mode scoping (R27): deliverable tasks are
+	// exactly the ones created while authority was ACTIVE; shadow-era
+	// observations and pre-ledger rows (empty mode) are never claimed.
 	var out, rest []Task
 	for _, t := range b.tasks {
-		if t.AuthorityGeneration == generation && len(out) < limit {
+		if t.CreatedMode == ModeActive && len(out) < limit {
 			out = append(out, t)
 			continue
 		}
@@ -131,8 +132,8 @@ func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Durati
 	return out, nil
 }
 
-func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]Task, error) {
-	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease, generation)
+func (m *modeStore) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error) {
+	tasks, err := m.BaseStore.ClaimNotifyTasks(ctx, limit, lease)
 	m.mu.Lock()
 	m.claimed = append(m.claimed, tasks...)
 	m.mu.Unlock()
@@ -185,7 +186,7 @@ func TestShadowToActiveNoHistoryReplay(t *testing.T) {
 
 	// ① shadow 期间：历史任务被记录、不被 claim。
 	svc.SetMode(ModeShadow)
-	st.tasks = []Task{{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	st.tasks = []Task{{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeShadow}}
 	svc.DeliverOnce(ctx) // 首次初始化 → generation 1 (shadow)
 	if sender.count() != 0 || len(st.claimed) != 0 {
 		t.Fatalf("shadow phase: sent=%d claimed=%d", sender.count(), len(st.claimed))
@@ -199,8 +200,8 @@ func TestShadowToActiveNoHistoryReplay(t *testing.T) {
 
 	// ③ 新 generation 任务正常投递；shadow 历史任务不被补发。
 	st.tasks = append(st.tasks,
-		Task{ID: "shadow-hist-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
-		Task{ID: "fresh-task", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 2},
+		Task{ID: "shadow-hist-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeShadow},
+		Task{ID: "fresh-task", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 2, CreatedMode: ModeActive},
 	)
 	svc.DeliverOnce(ctx)
 	if st.authGen != 2 {
@@ -222,8 +223,8 @@ func TestActiveWithoutShadowClaimsAll(t *testing.T) {
 	sender := &captureSender{}
 	svc := NewService(st, sender) // 默认 active，从未 shadow
 	st.tasks = []Task{
-		{ID: "old-backlog", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
-		{ID: "new", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
+		{ID: "old-backlog", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive},
+		{ID: "new", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive},
 		{ID: "pre-authority", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 0},
 	}
 	svc.DeliverOnce(ctx)
@@ -246,7 +247,7 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 	svc1 := NewService(st, sender1)
 	svc1.SetMode(ModeShadow)
 	for i := 0; i < 1000; i++ {
-		st.tasks = append(st.tasks, Task{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1})
+		st.tasks = append(st.tasks, Task{ID: "shadow-hist", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeShadow})
 	}
 	svc1.DeliverOnce(ctx)
 	if sender1.count() != 0 {
@@ -268,7 +269,7 @@ func TestShadowAuthoritySurvivesRestart(t *testing.T) {
 	}
 
 	// 新 generation（2）的任务正常发送。
-	st.tasks = append(st.tasks, Task{ID: "fresh-after-restart", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 2})
+	st.tasks = append(st.tasks, Task{ID: "fresh-after-restart", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 2, CreatedMode: ModeActive})
 	svc2.DeliverOnce(ctx)
 	if sender2.count() != 1 {
 		t.Fatalf("fresh task after restart: sent=%d, want 1", sender2.count())
@@ -291,7 +292,7 @@ func TestSilenceCheckFailureDoesNotSend(t *testing.T) {
 	st := &silenceErrStore{modeStore: ms}
 	sender := &captureSender{}
 	svc := NewService(st, sender) // 默认 active
-	ms.tasks = []Task{{ID: "s1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	ms.tasks = []Task{{ID: "s1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive}}
 
 	svc.DeliverOnce(context.Background())
 	if sender.count() != 0 {
@@ -344,8 +345,8 @@ func TestLeaseRenewalBeforeSend(t *testing.T) {
 	sender := &captureSender{}
 	svc := NewService(rc, sender)
 	ms.tasks = []Task{
-		{ID: "r1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
-		{ID: "r2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1},
+		{ID: "r1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive},
+		{ID: "r2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive},
 	}
 	svc.DeliverOnce(ctx)
 	if sender.count() != 2 || rc.renewsCount() != 2 {
@@ -357,7 +358,7 @@ func TestLeaseRenewalBeforeSend(t *testing.T) {
 	stale := &staleRenewStore{modeStore: ms2}
 	sender2 := &captureSender{}
 	svc2 := NewService(stale, sender2)
-	ms2.tasks = []Task{{ID: "dup", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	ms2.tasks = []Task{{ID: "dup", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive}}
 	svc2.DeliverOnce(ctx)
 	if sender2.count() != 0 {
 		t.Fatalf("stale renewal sent %d notifications, want 0 (double-page guard)", sender2.count())
@@ -374,8 +375,8 @@ func TestChannelRateLimit(t *testing.T) {
 	svc := NewService(ms, sender)
 	svc.SetDeliveryTuning(1, 5) // serial + 5 sends/sec
 	ms.tasks = []Task{
-		{ID: "c1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, ChannelID: "ch-1"},
-		{ID: "c2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, ChannelID: "ch-1"},
+		{ID: "c1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive, ChannelID: "ch-1"},
+		{ID: "c2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive, ChannelID: "ch-1"},
 	}
 	start := time.Now()
 	svc.DeliverOnce(context.Background())
@@ -412,8 +413,8 @@ func TestMultiWorkerSameModeSharesGeneration(t *testing.T) {
 
 	// 同纪元任务对两个副本都可见：A 领走一条后，B 仍能领到剩余一条。
 	st.tasks = []Task{
-		{ID: "mw-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA},
-		{ID: "mw-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA},
+		{ID: "mw-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA, CreatedMode: ModeActive},
+		{ID: "mw-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: genAfterA, CreatedMode: ModeActive},
 	}
 	a.SetTuning(0, 0, 1) // batch=1：A 只领一条
 	if n := a.DeliverOnce(ctx); n != 1 {
@@ -429,7 +430,7 @@ func TestNotifyMetrics(t *testing.T) {
 	ctx := context.Background()
 	ms := &modeStore{}
 	svc := NewService(ms, &captureSender{})
-	ms.tasks = []Task{{ID: "nm-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	ms.tasks = []Task{{ID: "nm-1", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive}}
 
 	beforeSent := testutil.ToFloat64(attempts.WithLabelValues("", "sent"))
 	svc.DeliverOnce(ctx)
@@ -447,7 +448,7 @@ func TestNotifyMetrics(t *testing.T) {
 	beforeStale := testutil.ToFloat64(leaseRenewFailures.WithLabelValues("stale"))
 	ms2 := &modeStore{}
 	svc2 := NewService(&staleRenewStore{modeStore: ms2}, &captureSender{})
-	ms2.tasks = []Task{{ID: "nm-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1}}
+	ms2.tasks = []Task{{ID: "nm-2", Attempts: 1, Payload: []byte(`{}`), AuthorityGeneration: 1, CreatedMode: ModeActive}}
 	svc2.DeliverOnce(ctx)
 	if got := testutil.ToFloat64(leaseRenewFailures.WithLabelValues("stale")) - beforeStale; got != 1 {
 		t.Fatalf("lease_renew_failures{stale} delta = %v, want 1", got)

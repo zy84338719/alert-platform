@@ -974,3 +974,43 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
 - **新能力核查（可用但不需要，未强用）**：hertz #298 WithExtraGatherers（已核查全仓指标面收口 oekitmetrics.Registry、retention 装配显式传参，无 DefaultRegisterer 黑洞）；mw v0.20 auditlog 增强（用自建 audit_logs，未用 mw auditlog）；concurrency #351 breaker 状态钩子（无熔断）；pkg v0.51 sse 游标内核（无服务端 SSE）；pkg v0.52 Newf/Wrapf 错误三形态（消费方风格迁移量大，与升级解耦，记录为可选跟进不在本次范围）。
 - **BREAKING 核查（均未触及，build 即证）**：logx #180 shutdown 兼容层删除、metrics v0.4.0 resilience int 五件套删除、concurrency v0.36.0 Slot.Panicked 退役、pkg v0.50 licensx/IM 载荷摘除。
 - **验证**：go build/tidy ✓；golangci-lint **0 issues** ✓；`go test ./...` 全量（PG/Kafka resident 55432/19092）结果见下轮回填；无代码改动（纯 go.mod/go.sum 变更）。
+
+---
+
+## 2026-11-17 · R27：能力 drill sweep 全量回归（6/6 PASS）+ 4 处真实缺陷修复
+
+### Drill 结果
+
+| Drill | 结果 |
+| --- | --- |
+| REL-002（通知权切换/对账/回滚） | **PASS** |
+| T-011（Edge 断网 WAL 100% 补传） | **PASS** |
+| T-010（PG 故障零误提交/收敛/零重复） | **PASS** |
+| PITR（任意时间点恢复） | **PASS** |
+| MVP-001（全链路闭环） | **PASS** |
+| 兜底自告警（真进程 fail-stop → 独立 webhook） | **PASS** |
+
+证据：`docs/evidence/drill-sweep-2026-11-17.md`。
+
+### 修复的真实缺陷
+
+1. **P0 通知可投递性**：迁移 0013 `notification_outbox.created_mode`；入队记录授权模式，
+   claim 仅投 `created_mode='active'`。active 期任务被 shadow 打断后回 active 补投恰一次；
+   shadow 期任务永不补投（P0-07 守卫）；pre-ledger 永不领取。回归测试重写为成员关系断言。
+2. **P1 processor 挂起**：`pgxpool.Acquire` 在 DB 不可达时可无限等待 → `ApplyEvent` 15s 上界
+   （`storeCallTimeout`），fail-stop 语义恢复。
+3. **P1 接入可用性**：`sourcereg.CachedStore`（正缓存 30s、管理写失效、负结果不缓存）——
+   PG 故障窗口内 ingest 继续 202 入队。
+4. **P2 loadgen 生产者语义**：失败批次有界重试（同 batch_id），不再静默丢弃。
+
+### Drill 修复（陈旧假设）
+
+- REL-002 phase 4 重写为 4a（active 在途任务不丢不重发）+ 4b（shadow 期永不补投）；
+- T-011 改用 P8 上行身份（X-Edge-Id + allowed_source_ids）；
+- T-010 凭证注入 + 容器级 stop/start 混沌 + 停机期推事件触发确定性 fail-stop + 断言按
+  receipts 收敛（≥300）与 transitions≤receipts。
+
+### 验收
+
+- `go vet` / `golangci-lint`（0 issues）/ `go test ./...`（PG/Kafka resident）全绿；
+- 6 个 drill 全 PASS（本地单节点规模；四集群/生产容量仍挂 MC-001/P8-012）。

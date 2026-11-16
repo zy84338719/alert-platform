@@ -27,9 +27,13 @@ type Task struct {
 	Attempts    int
 	CreatedAt   time.Time // enqueue time (shadow-era diagnostics)
 	LeaseToken  string    // P1-02 fencing token minted by the claim; empty = legacy
-	// AuthorityGeneration (P8-P0-01) is the ownership era the task was
-	// enqueued in; only the current era is claimable.
+	// AuthorityGeneration is the ownership era the task was enqueued in
+	// (audit/metrics marker only — deliverability is decided by CreatedMode).
 	AuthorityGeneration int64
+	// CreatedMode (R27) is the authority mode at enqueue time: deliverable
+	// tasks are exactly the ones created while authority was ACTIVE. Shadow-era
+	// observations and pre-ledger rows (empty mode) are never claimed.
+	CreatedMode string
 }
 
 // ErrStaleNotifyLease marks a finish attempt from a worker that no longer
@@ -56,10 +60,11 @@ type Store interface {
 	// initialization after the authority ledger was introduced) = new
 	// generation, effective now. Returns the authoritative state.
 	SyncNotifyAuthority(ctx context.Context, desiredMode string) (Authority, error)
-	// ClaimNotifyTasks claims due tasks of the given authority generation;
-	// pre-authority (generation 0) and older-generation tasks are never
-	// claimed — the shadow→active switch must not auto-replay history.
-	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration, generation int64) ([]Task, error)
+	// ClaimNotifyTasks claims due tasks whose created_mode is ACTIVE
+	// (R27): shadow-era observations and pre-ledger rows are never claimed,
+	// but active-era tasks interrupted by a shadow switch deliver after the
+	// authority returns (REL-002 phase 4).
+	ClaimNotifyTasks(ctx context.Context, limit int, lease time.Duration) ([]Task, error)
 	// FinishNotifyTask records one attempt outcome. leaseToken (P1-02) fences
 	// the completion: a stale worker's late result is audited but never
 	// overwrites the current owner's state (ErrStaleNotifyLease).
@@ -69,9 +74,9 @@ type Store interface {
 	// worker — the caller must NOT send (would duplicate a page).
 	RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
-	// PeekNotifyTasks lists pending tasks of the given generation WITHOUT
-	// claiming or mutating them (REL-001 shadow mode: the would-have-sent
-	// trail must not disturb the delivery queue state machine).
+	// PeekNotifyTasks lists pending tasks of the given authority generation
+	// WITHOUT claiming or mutating them (REL-001 shadow mode: the
+	// would-have-sent trail must not disturb the delivery queue state machine).
 	PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]Task, error)
 	// RecordShadowDelivery writes one audited would-have-sent record; the
 	// same task is only recorded once (idempotent per task).
@@ -248,7 +253,7 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 	if s.mode == ModeShadow {
 		return s.shadowOnce(ctx)
 	}
-	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease, s.generation)
+	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "notify claim failed", logx.ErrKey, err)
@@ -397,13 +402,13 @@ func (s *Service) samplePending(ctx context.Context) {
 		return
 	}
 	counter, ok := s.store.(interface {
-		CountPendingNotifyTasks(ctx context.Context, generation int64) (int64, error)
+		CountPendingNotifyTasks(ctx context.Context) (int64, error)
 	})
 	if !ok {
 		return
 	}
 	s.pendingSampledAt = time.Now()
-	n, err := counter.CountPendingNotifyTasks(ctx, s.generation)
+	n, err := counter.CountPendingNotifyTasks(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "pending notification count failed", logx.ErrKey, err)
