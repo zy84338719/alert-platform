@@ -130,3 +130,5 @@ P9-014,P9,W23,P0,Backend-Core,2,通知可投递性 created_mode（REL-002 P0）,
 P9-015,P9,W23,P1,Platform,1,processor store 调用上界,ApplyEvent 15s 超时（防 pgxpool 无限等待架空 fail-stop）,T-010 容器停机确定性 fail-stop,P8-013,DONE
 P9-016,P9,W23,P1,Security,1,接入凭证缓存,sourcereg.CachedStore 正缓存 30s+管理写失效,PG 故障期 ingest 继续 202；cache 单测,P8-002,DONE
 P9-017,P9,W23,P1,QA,2,能力 drill sweep 全量回归,REL-002/T-011/T-010/PITR/MVP/兜底 webhook 真进程重跑,6/6 PASS 证据 docs/evidence/drill-sweep-2026-11-17.md,,DONE
+P9-018,P9,W23,P1,SRE,1,集群升级 schema 13,0.6.0-dev 节点导入+helm upgrade REVISION 8,迁移 13 应用/created_mode 列/健康与路由检查,P9-010,DONE
+P9-019,P9,W23,P2,QA,1,smoke 测试隔离与自愈,唯一 batch/event/entity+断言按本轮作用域+依赖 compose up 自愈,SMOKE PASS（连续可重复）,P9-017,DONE

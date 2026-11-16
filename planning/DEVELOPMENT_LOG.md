@@ -1014,3 +1014,17 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
 
 - `go vet` / `golangci-lint`（0 issues）/ `go test ./...`（PG/Kafka resident）全绿；
 - 6 个 drill 全 PASS（本地单节点规模；四集群/生产容量仍挂 MC-001/P8-012）。
+
+---
+
+## 2026-11-17 · R28：集群升级 schema 13（REVISION 8）+ smoke/replay 回归与测试隔离修复
+
+- **集群**：`alert-platform:0.6.0-dev` 节点导入 → `ap-dev` **REVISION 8**；`schema 13|f`，
+  `notification_outbox.created_mode` 存在；api/edge Ready，ingest 指标 15 条，history/metrics-center
+  路由 401（鉴权生效），authority 种子 `active gen=1 initialized=false`（worker 仍 disabled）。
+- **smoke_e2e.sh 修复（R28）**：①每轮唯一 batch/event/entity 身份——持久 dev 库中固定 id 早已是
+  永久重复，重复事件不再驱动状态机（stale 实例无法复活），断言也曾命中历史行；②断言按本轮
+  `entity_uid` 精确作用域；③前置依赖自愈（上一轮 `dev_up.sh down` 会停 compose 依赖，导致隔轮失败）。
+  修复后 **SMOKE PASS**。
+- **replay_v02.sh**：当前代码复跑 **PASS**（T-005/T-006/T-007）。
+- 证据补充：`docs/evidence/P9-cluster-verification-2026-11-16.md` 末尾新增 REVISION 8 段。

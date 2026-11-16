@@ -22,6 +22,9 @@ die() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 psql() { docker exec dev-postgres-1 psql -U postgres -d alert_platform -tAc "$1"; }
 
 log "step 1/7: dependencies health (compose)"
+# Self-healing: dev_up.sh down (used by the previous run's teardown) stops the
+# compose dependencies, so bring them back idempotently before checking.
+docker compose -f deploy/dev/docker-compose.yaml up -d >/dev/null
 docker compose -f deploy/dev/docker-compose.yaml ps --status running | grep -q postgres || die "dev postgres not running (make dev-deps)"
 docker compose -f deploy/dev/docker-compose.yaml ps --status running | grep -q kafka || die "dev kafka not running (make dev-deps)"
 
@@ -39,6 +42,11 @@ GOWORK=off go run ./cmd/alert-migrate -dsn "$PG_DSN" || die "migrate failed"
 
 # P7-P0-03: /ingest/v1 is credential-gated; register the smoke source so the
 # canonical POST exercises the REAL authorized path instead of 401.
+# R28: unique batch/event identity per run. The smoke DB is persistent, so
+# fixed ids became permanent duplicates: a repeat event no longer drives the
+# state machine (a stale instance could never be revived) — the drill silently
+# asserted on OLD rows.
+SMOKE_RUN="$(date +%s)"
 SMOKE_TENANT="11111111-1111-1111-1111-111111111111"
 SMOKE_SRC="22222222-2222-2222-2222-222222222222"
 SMOKE_TOKEN="aps_smoke_$(date +%s)"
@@ -69,18 +77,20 @@ log "healthz 200 on api/worker/edge"
 log "step 4/7: POST /ingest/v1/events:batch"
 TENANT="$SMOKE_TENANT"
 SRC="$SMOKE_SRC"
-BODY='{"batch_id":"smoke-batch-1","events":[{"tenant_id":"'$TENANT'","source":{"source_id":"'$SRC'","source_type":1,"external_rule_id":"dp-rule-7"},"resource":{"cluster_id":"c1","resource_type":"pod","resource_uid":"uid-smoke-1"},"kind":1,"signal":1,"severity":1,"alert_name":"smoke-cpu-high","event_key":"smoke-ek-1"}]}'
+BODY='{"batch_id":"smoke-'$SMOKE_RUN'","events":[{"tenant_id":"'$TENANT'","source":{"source_id":"'$SRC'","source_type":1,"external_rule_id":"dp-rule-'$SMOKE_RUN'"},"resource":{"cluster_id":"c1","resource_type":"pod","resource_uid":"uid-smoke-'$SMOKE_RUN'"},"kind":1,"signal":1,"severity":1,"alert_name":"smoke-cpu-high","event_key":"smoke-ek-'$SMOKE_RUN'"}]}'
 resp="$(curl -s -X POST http://127.0.0.1:8080/ingest/v1/events:batch \
   -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -H "Authorization: Bearer $SMOKE_TOKEN" -d "$BODY")"
-echo "$resp" | grep -q '"durable_batch_id":"smoke-batch-1"' || die "expected 202 envelope with durable_batch_id, got: $resp"
-log "202 accepted (durable_batch_id=smoke-batch-1)"
+echo "$resp" | grep -q '"durable_batch_id":"smoke-'$SMOKE_RUN'"' || die "expected 202 envelope with durable_batch_id, got: $resp"
+log "202 accepted (durable_batch_id=smoke-$SMOKE_RUN)"
 
 log "step 5/7: worker consumption -> PG"
 sleep 4
-[ "$(psql "SELECT count(*) FROM event_receipts WHERE transport_id='smoke-batch-1:0'")" = "1" ] || die "receipt missing"
-state="$(psql "SELECT i.monitor_state FROM alert_instances i WHERE i.name='smoke-cpu-high'")"
+[ "$(psql "SELECT count(*) FROM event_receipts WHERE transport_id='smoke-$SMOKE_RUN:0'")" = "1" ] || die "receipt missing"
+# R28: scope to THIS run's instance — the dev DB is persistent and earlier
+# smoke runs left instances behind (name-only lookups returned multiple rows).
+state="$(psql "SELECT i.monitor_state FROM alert_instances i WHERE i.entity_uid='uid-smoke-$SMOKE_RUN'")"
 [ "$state" = "firing" ] || die "instance state = $state, want firing"
-[ "$(psql "SELECT count(*) FROM alert_transitions t JOIN alert_instances i ON i.id=t.alert_instance_id WHERE i.name='smoke-cpu-high'")" = "1" ] || die "transition missing"
+[ "$(psql "SELECT count(*) FROM alert_transitions t JOIN alert_instances i ON i.id=t.alert_instance_id WHERE i.entity_uid='uid-smoke-$SMOKE_RUN'")" = "1" ] || die "transition missing"
 log "PG: receipt + firing instance + transition present"
 
 log "step 6/7: trace_id correlation api<->worker (Kafka header propagation)"
@@ -94,7 +104,7 @@ log "step 7/7: duplicate batch retry is transport-idempotent"
 curl -s -X POST http://127.0.0.1:8080/ingest/v1/events:batch \
   -H 'Content-Type: application/json' -H "X-Trace-Id: $TID" -H "Authorization: Bearer $SMOKE_TOKEN" -d "$BODY" >/dev/null
 sleep 3
-[ "$(psql "SELECT count(*) FROM event_receipts WHERE transport_id='smoke-batch-1:0'")" = "1" ] || die "duplicate batch created extra receipts"
+[ "$(psql "SELECT count(*) FROM event_receipts WHERE transport_id='smoke-$SMOKE_RUN:0'")" = "1" ] || die "duplicate batch created extra receipts"
 log "retry kept receipts at 1 (deterministic transport_id)"
 
 log "SMOKE PASS: API 202 -> Kafka -> worker -> PG(firing) with trace correlation and idempotent retry"

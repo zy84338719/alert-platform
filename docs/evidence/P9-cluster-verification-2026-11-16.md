@@ -50,3 +50,14 @@
   真实链路挂 INC-007）。
 - 集群 worker 仍 disabled（无 Kafka），`telemetry`/`notify`/`archive` 指标在 worker 侧未实机抓取。
 - 临时 Prometheus/ConfigMap/port-forward/演示令牌均已清理；集群保留 REVISION 7（0.5.2-dev）。
+---
+
+## 后续：R28 升级（2026-11-17，REVISION 8 / schema 13）
+
+- 镜像 `alert-platform:0.6.0-dev`（含 R27 created_mode 迁移 0013 + processor 超时 + 凭证缓存）经节点导入法
+  部署，`helm upgrade` → **REVISION 8**；api/edge 滚动成功。
+- `schema_migrations = 13|f`；`notification_outbox.created_mode` 列存在。
+- 运行时检查：`/healthz` + `/readyz` 200；ingest 指标 15 条；`/history/v1/transitions` 与
+  `/metrics/v1/catalog` 均 401（鉴权生效）；`notification_authority` 种子 `active gen=1 initialized=false`
+  （worker 仍 disabled，符合设计）。
+- 同轮本地回归：`smoke_e2e.sh` PASS（修复持久库固定 id 与依赖自愈）、`replay_v02.sh` PASS。
