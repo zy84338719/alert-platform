@@ -917,3 +917,10 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
 
 - `golangci-lint` 0 issues；`go test ./...` 全绿。
 - drill PASS（真实 CH 引擎；生产 CH 集群/HA 仍挂 INC-007）。
+
+### R25 补充：1970 数据修复脚本
+
+- 新增 `scripts/repair_epoch_timestamps.sql`：检测 + 事务修复 `alert_transitions/alert_instances/event_history`
+  的 <2000 时间戳（用 created_at/received_at 作为最佳可得代理），仅触碰可疑列。
+- 本地 dev 库实测：修复前 transitions/instances 各 2 条 1970，修复后全部归零；集群 dev 库检测为 0。
+- docs/05 增升级注意：先跑修复脚本再重新归档，避免 CH 197001 分区被 TTL 静默删除。
