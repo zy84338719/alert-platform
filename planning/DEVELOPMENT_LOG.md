@@ -937,3 +937,19 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   NetworkPolicy/PrometheusRule 门禁从手工脚本升级为每次 push 强制。
 - **安全硬化**：`platform_api` 心跳 `X-Edge-Key` 改 `subtle.ConstantTimeCompare`（无行为变化）。
 - 证据/文档：backlog 增 P9-012/013（DONE）→ 终态 **DONE×101 / REVIEW×4 / BLOCKED×6**。
+
+---
+
+## 2026-11-17 · P10–P13 演进路线落地（评审 065daaf → 8 项断言全核实 → backlog + GitHub issues）
+
+- **外部架构评审 8 项断言逐条对码核实，全部成立**（3×P0 + 5×P1）：
+  归档游标事件时间缺陷（archive_store.go:43）、CH 归档无单写者/无幂等（archive/service.go + MergeTree DDL）、
+  冷热路由相对查询终点 to 计算（history/service.go:45）、指标中心平台级全局表达式仅 PermAlertsRead 门禁、
+  通知权威无 DB 侧 fencing（ensureAuthority 缓存盲区 + claim 不校验当前 authority）、
+  生命周期仅 receipts/notifications/audit、/metrics/v1 与 /history/v1 脱离 IDL、单 worker 七类后台任务无执行所有权。
+- **与在途 R27 的关系**：R27（0013 + created_mode 交付语义）修"authority 振荡搁浅 ACTIVE 任务"（REL-002 phase4），
+  与 P10-005 fencing 互补且必须正交组合——交付资格看 created_mode，执行资格看 claim 时 DB 当前 authority。
+- **落地物**：planning/P10-P13-Production-Roadmap-2026-11-17.md（核实表 + P10 任务表 19 人日 + P11 矩阵 + P12 模块 + P13 发布证据清单 + 优先级总表）；
+  backlog 增 P10-001..008（W26–W27，TODO×8）。
+- **GitHub issues**：跟踪单 ×1（P10–P13 路线）+ P10 任务单 ×8（标题带 [P10-00x][P0/P1]，正文含代码证据/验收标准/依赖）。
+- 下轮建议：按 P10-001→002→003 串行开工（游标语义是幂等与路由的前提）；P10-005/006/007 可并行。
