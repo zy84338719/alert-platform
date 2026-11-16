@@ -77,10 +77,8 @@ ClickHouse 仅有接口；控制台无指标查询/看板页。
 - 验收：rule 渲染矩阵；兜底通道单测（HTTP 200/非 200 语义、脱敏、超时）。
 
 ### P9-MC-01 产品内"指标中心"（Phase 2）
-- 数据源决策（三选一，需评审）：
-  A. Prometheus HTTP API 代理（推荐：与 OBS 指标同源，无需新存储）；
-  B. PG 聚合查询（无外部依赖，但保留窗口受 RETN 限制）；
-  C. ClickHouse（需先完成 P9-CH-01）。
+- **数据源决策（2026-11-16）：A. Prometheus HTTP API 代理**（与 OBS 指标同源、无需新存储；
+  B/C 保留为后续备选）。
 - 后端：`GET /metrics/v1/query`（白名单指标 + 时间范围 + 步长，租户/权限复用现有 RBAC）。
 - 前端：控制台新增"指标中心"页（趋势图、TopN、告警叠加）；不引入 Vue3 工程化前用原生 JS 实现。
 - 验收：白名单外指标 403；查询超时/无数据有明确 UI 状态；页面截图入 docs/evidence。
@@ -120,9 +118,9 @@ ClickHouse 仅有接口；控制台无指标查询/看板页。
 | P9-OBS-03 | 消费/处理指标 | DONE | `1a71339` | TestHandleMetricsOutcomes + DLQ 计数断言 |
 | P9-OBS-04 | 通知指标 | DONE | `1a71339` | TestNotifyMetrics + 多副本/租约联动 |
 | P9-OBS-05 | Edge/SSE 指标 | DONE | `1a71339` | TestSSEGapMetricIncrements + 重连计数 |
-| P9-OBS-06 | 业务 Gauges | TODO | | |
-| P9-OBS-07 | 自身告警+兜底通道 | TODO | | |
-| P9-MC-01 | 产品内指标中心 | TODO | | 需数据源评审 |
+| P9-OBS-06 | 业务 Gauges | DONE | `77b0ec7` | TestSampleBusinessGauges（active/incident/heartbeat+序列清理） |
+| P9-OBS-07 | 自身告警+兜底通道 | DONE | `77b0ec7` | TestSelfAlerter×3 + scripts/test_chart_rules.py（5 规则/selector/extraRules/docs 一致） |
+| P9-MC-01 | 产品内指标中心 | DONE | `77b0ec7` | 数据源=Prometheus API；metricsquery/promclient/handler 测试 + 控制台截图 docs/evidence/console-metrics.png |
 | P9-CH-01 | ClickHouse 归档 | TODO | | INC-007 联动 |
 | P9-INT-01 | 真实集成 | BLOCKED | — | 外部输入 |
 

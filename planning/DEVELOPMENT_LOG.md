@@ -819,3 +819,42 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 
 OBS-06 业务 Gauges、OBS-07 PrometheusRule+独立兜底通道、MC-01 产品内指标中心（需数据源评审）、
 CH-01 ClickHouse 归档（INC-007 联动）、INT-01 真实集成（BLOCKED）。
+
+---
+
+## 2026-11-16 · R23：P9 第二批（OBS-06/07 + MC-01 指标中心，commit 77b0ec7）
+
+### 交付
+
+- **OBS-06 业务 Gauges**：新增 `internal/application/telemetry` 采样器（worker 非关键任务，30s）：
+  `alert_platform_alert_active_instances`、`alert_platform_incident_open`、
+  `alert_platform_source_heartbeat_age_seconds{source}`（仅 enabled 且已上报；每轮 Reset 清幽灵序列）。
+  PG 聚合查询在 `postgres/telemetry_store.go`。
+- **OBS-07 自身告警与兜底**：
+  - Helm `prometheusRule`（默认关闭）：IngestRejectRate / ConsumerLag / DLQGrowing / NotifyFailures /
+    NotifyBacklog 五条规则，`labels` 适配 rule selector，`extraRules` 可扩展。
+  - 独立兜底通道 `channel.SelfAlerter`：worker 关键任务 fail-stop 前直发 `ALERT_FALLBACK_WEBHOOK`，
+    **不经过 notification_outbox**；沿用 SSRF 拨号守卫（`ALERT_FALLBACK_ALLOW_PRIVATE` 控制私网）。
+- **MC-01 指标中心（数据源=Prometheus HTTP API）**：
+  - 后端：`metricsquery` 服务端白名单（16 个指标，客户端不能注入 PromQL）、窗口 ≤24h/步长 ≥15s/点数 ≤2000；
+    `promclient` 调 `/api/v1/query_range`；`GET /metrics/v1/catalog`、`GET /metrics/v1/query`（Bearer + alerts:read，
+    未配置 503、未知指标 404、参数越界 400）。
+  - 前端：控制台"指标"页（目录下拉/时间窗/步长/SVG 趋势/图例最新值）。
+  - 真实运行验证：stub Prometheus + 真实 alert-api + 平台令牌，页面渲染正确，
+    截图 `docs/evidence/console-metrics.png`。
+- 文档：docs/08 §3（自身告警+兜底+指标中心）、docs/12（配置表）、P9 状态表、backlog P9-005..007 DONE。
+
+### 验收
+
+| 项 | 结果 |
+| --- | --- |
+| `golangci-lint run ./...` | 0 issues |
+| `go test ./...`（PG/Kafka resident） | 全绿 |
+| 新增单测 | telemetry / selfalert / metricsquery / promclient / metrics_center handler |
+| `scripts/test_chart_rules.py` | PASS（5 规则、selector、extraRules、docs 指标一致） |
+| `scripts/test_chart_policies.py` | PASS（P8 策略矩阵不回归） |
+| 控制台视觉 | 指标页截图（目录/时间窗/曲线/图例最新值） |
+
+### 剩余
+
+P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKED，外部输入）。
