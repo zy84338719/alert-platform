@@ -22,12 +22,14 @@ import (
 	"github.com/example/alert-platform/internal/application/authn"
 	"github.com/example/alert-platform/internal/application/incident"
 	"github.com/example/alert-platform/internal/application/ingest"
+	"github.com/example/alert-platform/internal/application/metricsquery"
 	"github.com/example/alert-platform/internal/application/policymgmt"
 	"github.com/example/alert-platform/internal/application/query"
 	"github.com/example/alert-platform/internal/application/sourcereg"
 	"github.com/example/alert-platform/internal/infrastructure/kafka"
 	"github.com/example/alert-platform/internal/infrastructure/platform"
 	"github.com/example/alert-platform/internal/infrastructure/postgres"
+	"github.com/example/alert-platform/internal/infrastructure/promclient"
 )
 
 // version is injected at image build time via -ldflags "-X main.version=..." (Dockerfile/CI).
@@ -78,6 +80,14 @@ func main() {
 		return pool.Ping(pingCtx)
 	})
 
+	// P9-MC-01: the metrics center needs a Prometheus HTTP API; empty URL
+	// leaves the endpoints fail-closed (503) with a clear message.
+	if cfg.PrometheusURL != "" {
+		httpv1.SetMetricsQuery(metricsquery.NewService(promclient.New(cfg.PrometheusURL)))
+	} else {
+		httpv1.SetMetricsQuery(nil)
+	}
+
 	setup := func(h *server.Hertz) {
 		httpadapter.GeneratedRegister(h)
 		httpv1.RegisterExternalWebhooks(h)
@@ -86,6 +96,11 @@ func main() {
 		httpv1.SetOpsStore(postgres.NewStore(pool))
 		httpv1.SetEdgeAPIKey(cfg.EdgeAPIKey)
 		httpv1.RegisterPlatformAPI(h)
+		// P9-MC-01: console metrics center (Prometheus proxy, whitelisted).
+		// Registered even when unconfigured so the console can show a clear
+		// "backend not configured" state instead of a 404.
+		h.GET("/metrics/v1/catalog", httpv1.MetricsCatalog)
+		h.GET("/metrics/v1/query", httpv1.MetricsQueryRange)
 		console.Register(h)
 	}
 	if err := platform.RunService(cfg, platform.ComponentAPI, version, setup); err != nil {

@@ -76,6 +76,14 @@ networkPolicy:
     apiExtraEgress: []
     edgeExtraEgress: []
 
+# P9-OBS-07: self-monitoring alert rules (Prometheus Operator CRD).
+# Disabled by default — most clusters install kube-prometheus-stack with its
+# own rule selector; set labels to the selector your Prometheus uses.
+prometheusRule:
+  enabled: false
+  labels: {}
+  extraRules: []
+
 pdb:
   enabled: true
   minAvailable: 1

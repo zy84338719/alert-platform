@@ -1,0 +1,61 @@
+{{- if .Values.prometheusRule.enabled }}
+# P9-OBS-07: platform self-monitoring rules. Requires the Prometheus Operator
+# CRD (monitoring.coreos.com/v1) and a rule selector that matches the labels
+# below (`prometheusRule.labels` is where per-install selectors go).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "alert-platform.fullname" . }}
+  labels:
+    {{- include "alert-platform.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: alert-platform.rules
+      rules:
+        - alert: AlertPlatformIngestRejectRateHigh
+          expr: sum(rate(alert_platform_ingest_rejected_total[5m])) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "alert-platform ingest is rejecting requests"
+            description: "Rejection rate > 0.5/s for 10m (auth, validation or broker failures)."
+        - alert: AlertPlatformConsumerLagHigh
+          expr: max(alert_platform_consumer_lag) > 1000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "alert-platform consumer lag above 1000"
+            description: "Processors are not keeping up; scale replicas or check the broker."
+        - alert: AlertPlatformDLQGrowing
+          expr: increase(alert_platform_dlq_quarantined_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "poison messages quarantined into the DLQ"
+            description: "A source adapter is emitting contract-violating events; inspect alert.dlq.v1."
+        - alert: AlertPlatformNotifyFailures
+          expr: sum(rate(alert_platform_notify_attempt_total{result!="sent"}[10m])) > 0.1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "alert-platform notifications are failing"
+            description: "Non-sent attempt rate > 0.1/s for 10m (vendor rejection, SSRF guard or channel outage)."
+        - alert: AlertPlatformNotifyBacklog
+          expr: alert_platform_notify_pending > 100
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "notification backlog above 100"
+            description: "Pending/retry tasks are accumulating in the current authority generation."
+        {{- with .Values.prometheusRule.extraRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

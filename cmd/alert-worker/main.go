@@ -30,6 +30,7 @@ import (
 	"github.com/example/alert-platform/internal/application/processor"
 	"github.com/example/alert-platform/internal/application/relay"
 	"github.com/example/alert-platform/internal/application/retention"
+	"github.com/example/alert-platform/internal/application/telemetry"
 	"github.com/example/alert-platform/internal/application/worker"
 	"github.com/example/alert-platform/internal/infrastructure/channel"
 	"github.com/example/alert-platform/internal/infrastructure/kafka"
@@ -87,6 +88,9 @@ func main() {
 			return fmt.Errorf("notify authority: %w", err)
 		}
 
+		// telemetry sampler (P9-OBS-06): business gauges every 30s; auxiliary.
+		telemetrySvc := telemetry.NewService(store)
+
 		// retention: receipts cleanup (RETN-001) + notifications/audit (RETN-002);
 		// counters join the registry the /metrics endpoint serves.
 		retentionSvc := retention.NewService(retention.Multi(store, store),
@@ -96,6 +100,9 @@ func main() {
 
 		// P1-03 supervision: critical loops fail-stop, auxiliary loops degrade
 		// readiness. The readiness view joins /healthz + /readyz.
+		// P9-OBS-07: independent self-alert channel (never via notification_outbox).
+		selfAlerts := channel.NewSelfAlerter(cfg.FallbackWebhook, cfg.FallbackAllowPrivate)
+
 		group := worker.NewGroup()
 		group.Go(worker.Task{Name: "relay", Critical: true, Run: relaySvc.Run})
 		group.Go(worker.Task{Name: "notifier", Critical: true, Run: notifySvc.Run})
@@ -103,12 +110,21 @@ func main() {
 		group.Go(worker.Task{Name: "escalation", Critical: true, Run: escSvc.Run})
 		group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
 		group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})
+		group.Go(worker.Task{Name: "telemetry", Critical: false, Run: telemetrySvc.Run})
 		group.Go(worker.Task{Name: "processor", Critical: true, Run: func(ctx context.Context) error {
 			return consumer.Run(ctx, processorSvc.Handle)
 		}})
 		platform.RegisterRuntimeCheck("background-tasks", group.ReadinessCheck())
 
-		return group.Run(ctx)
+		runErr := group.Run(ctx)
+		if runErr != nil && ctx.Err() == nil {
+			// Best effort, detached from the (cancelled) component context:
+			// the process is about to exit, the alarm must still leave.
+			nctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			selfAlerts.Notify(nctx, platform.ComponentWorker, "critical background task exited: "+runErr.Error())
+			cancel()
+		}
+		return runErr
 	}
 
 	if err := platform.RunServiceWith(cfg, platform.ComponentWorker, version, nil, run); err != nil {

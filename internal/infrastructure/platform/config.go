@@ -52,6 +52,16 @@ type Config struct {
 	// a dev/test-only escape hatch for the SSRF dial guard (T-013).
 	AllowPrivateChannels bool `yaml:"allow_private_channels" env:"ALERT_ALLOW_PRIVATE_CHANNELS" default:"false"`
 
+	// FallbackWebhook (P9-OBS-07) is the platform's OWN alarm channel. It is
+	// intentionally NOT a notification_outbox task: when the notify pipeline
+	// is the thing that broke, self-alerts must still find a way out.
+	FallbackWebhook      string `yaml:"fallback_webhook" env:"ALERT_FALLBACK_WEBHOOK" default:""`
+	FallbackAllowPrivate bool   `yaml:"fallback_allow_private" env:"ALERT_FALLBACK_ALLOW_PRIVATE" default:"false"`
+
+	// PrometheusURL (P9-MC-01) is the Prometheus HTTP API base for the
+	// product Console "metrics center"; empty disables the endpoints (503).
+	PrometheusURL string `yaml:"prometheus_url" env:"ALERT_PROMETHEUS_URL" default:""`
+
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.
 	RetentionReceipts string `yaml:"retention_receipts" env:"ALERT_RETENTION_RECEIPTS" default:"168h"`

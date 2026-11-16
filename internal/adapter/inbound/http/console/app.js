@@ -451,6 +451,100 @@ views.audit = {
   },
 };
 
+views.metrics = {
+  async render(main) {
+    let catalog;
+    try {
+      catalog = await api("GET", "/metrics/v1/catalog");
+    } catch (e) {
+      main.innerHTML = '<p class="error">指标中心不可用：' + esc(e.message) +
+        '</p><p class="muted">需要服务端配置 ALERT_PROMETHEUS_URL（Prometheus HTTP API）。</p>';
+      return;
+    }
+    const metrics = catalog.metrics || [];
+    if (!metrics.length) { main.innerHTML = '<p class="muted">指标目录为空。</p>'; return; }
+    main.innerHTML = `
+      <div class="card">
+        <form class="inline" id="mq">
+          <label>指标<select id="mmetric">${metrics.map((m) =>
+            `<option value="${esc(m.name)}">${esc(m.name)} — ${esc(m.description)}</option>`).join("")}</select></label>
+          <label>时间窗<select id="mrange">
+            <option value="900">15 分钟</option>
+            <option value="3600" selected>1 小时</option>
+            <option value="21600">6 小时</option>
+            <option value="86400">24 小时</option>
+          </select></label>
+          <label>步长(秒)<input id="mstep" type="number" value="60" min="15" max="3600" style="width:80px"></label>
+          <button class="primary">查询</button>
+        </form>
+        <p class="muted">白名单指标由服务端选定 PromQL；客户端无法注入任意查询。</p>
+      </div>
+      <div id="mchart"><p class="muted">选择指标后点击查询。</p></div>`;
+    const run = async () => {
+      const metric = document.getElementById("mmetric").value;
+      const range = parseInt(document.getElementById("mrange").value, 10);
+      const step = parseInt(document.getElementById("mstep").value, 10) || 60;
+      const end = Math.floor(Date.now() / 1000);
+      const start = end - range;
+      const box = document.getElementById("mchart");
+      box.innerHTML = '<p class="muted">查询中…</p>';
+      try {
+        const res = await api("GET", `/metrics/v1/query?metric=${encodeURIComponent(metric)}&start=${start}&end=${end}&step=${step}`);
+        drawMetricChart(box, res);
+      } catch (e) {
+        box.innerHTML = '<p class="error">查询失败：' + esc(e.message) + '</p>';
+      }
+    };
+    document.getElementById("mq").onsubmit = (e) => { e.preventDefault(); run(); };
+    run();
+  },
+};
+
+function drawMetricChart(box, res) {
+  const series = (res.series || []).slice(0, 5);
+  if (!series.length || series.every((s) => !(s.points || []).length)) {
+    box.innerHTML = '<p class="muted">该时间窗暂无数据。</p>';
+    return;
+  }
+  const W = 860, H = 260, P = 40;
+  const pts = series.flatMap((s) => s.points || []);
+  const minX = Math.min(...pts.map((p) => p[0]));
+  const maxX = Math.max(...pts.map((p) => p[0]));
+  const values = pts.map((p) => p[1]);
+  let maxY = Math.max(...values);
+  let minY = Math.min(0, ...values);
+  if (maxY === minY) maxY = minY + 1;
+  const x = (v) => P + ((v - minX) / (maxX - minX || 1)) * (W - 2 * P);
+  const y = (v) => H - P - ((v - minY) / (maxY - minY)) * (H - 2 * P);
+  const colors = ["#4f8cff", "#ff6b6b", "#2ecc71", "#f1c40f", "#9b59b6"];
+  const paths = series.map((s, i) => {
+    const line = (s.points || []).map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    return `<polyline fill="none" stroke="${colors[i % colors.length]}" stroke-width="1.6" points="${line}"/>`;
+  }).join("");
+  const legend = series.map((s, i) => {
+    const labels = Object.keys(s.labels || {}).length
+      ? Object.entries(s.labels).map(([k, v]) => k + "=" + v).join(", ")
+      : "(all)";
+    const last = (s.points || []).slice(-1)[0];
+    return `<div><span style="display:inline-block;width:10px;height:10px;background:${colors[i % colors.length]};margin-right:6px"></span>` +
+      esc(labels) + ' · 最新 <b>' + (last ? esc(String(last[1].toFixed(3))) : "—") + "</b></div>";
+  }).join("");
+  const yTop = esc(String(maxY.toFixed(3)));
+  const yBottom = esc(String(minY.toFixed(3)));
+  const tFrom = new Date(minX * 1000).toLocaleTimeString();
+  const tTo = new Date(maxX * 1000).toLocaleTimeString();
+  box.innerHTML = `<div class="card"><b>${esc(res.metric)}</b> <span class="muted">${esc(res.unit || "")}</span>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+      <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" stroke="#444" stroke-width="1"/>
+      <line x1="${P}" y1="${P}" x2="${P}" y2="${H - P}" stroke="#444" stroke-width="1"/>
+      <text x="${P - 4}" y="${P + 10}" fill="#888" font-size="11" text-anchor="end">${yTop}</text>
+      <text x="${P - 4}" y="${H - P}" fill="#888" font-size="11" text-anchor="end">${yBottom}</text>
+      ${paths}
+    </svg>
+    <div class="muted">${esc(tFrom)} → ${esc(tTo)} · step ${esc(String(res.step_seconds))}s</div>
+    <div class="mt">${legend}</div></div>`;
+}
+
 // ---------------------------------------------------------------- router
 function route() {
   const hash = location.hash || "#/";
