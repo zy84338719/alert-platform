@@ -116,10 +116,10 @@ ClickHouse 仅有接口；控制台无指标查询/看板页。
 
 | ID | 任务 | 状态 | Commit | 证据 |
 | --- | --- | --- | --- | --- |
-| P9-OBS-02 | 接入指标 | TODO | | |
-| P9-OBS-03 | 消费/处理指标 | TODO | | |
-| P9-OBS-04 | 通知指标 | TODO | | |
-| P9-OBS-05 | Edge/SSE 指标 | TODO | | |
+| P9-OBS-02 | 接入指标 | DONE | `1a71339` | TestIngestMetrics（计数/直方图/失败不误记） |
+| P9-OBS-03 | 消费/处理指标 | DONE | `1a71339` | TestHandleMetricsOutcomes + DLQ 计数断言 |
+| P9-OBS-04 | 通知指标 | DONE | `1a71339` | TestNotifyMetrics + 多副本/租约联动 |
+| P9-OBS-05 | Edge/SSE 指标 | DONE | `1a71339` | TestSSEGapMetricIncrements + 重连计数 |
 | P9-OBS-06 | 业务 Gauges | TODO | | |
 | P9-OBS-07 | 自身告警+兜底通道 | TODO | | |
 | P9-MC-01 | 产品内指标中心 | TODO | | 需数据源评审 |

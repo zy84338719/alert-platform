@@ -791,3 +791,31 @@ P2→P6 八轮（R7–R14）将 backlog 从「P0/P1 部分」推进到 **66 DONE
 - `go test ./...`（PG/Kafka resident deps）：全绿；DLQ 测试含 origin 头断言通过。
 - 环境注记：本轮中途 Docker daemon 退出导致 resident Kafka/PG 不可用，已 `make dev-deps`
   重新拉起后复跑，无代码影响。
+
+---
+
+## 2026-11-16 · R22：P9 第一批指标落地（OBS-02..05，docs/08 指标契约对齐）
+
+### 交付（commit 1a71339）
+
+- **命名统一**：`alert_platform_<area>_<metric>`；低基数标签白名单（reason/result/outcome/channel_type/topic/group），
+  禁止 event/incident/pod/source uid/channel_id 进入 label。
+- **接入（OBS-02）**：`ingest_events_total`、`ingest_rejected_total{reason}`（unauthenticated/disabled/registry/
+  invalid/forbidden/service/unavailable）、`ingest_batch_duration_seconds`；handler/middleware 埋点。
+- **消费/处理（OBS-03）**：`processor_events_total{outcome}`、`processor_duration_seconds`、
+  `consumer_lag{topic,group}`（kafka-go ReaderStats）、`dlq_quarantined_total{topic}`。
+- **通知（OBS-04）**：`notify_attempt_total{channel_type,result}`、`notify_pending`（PG 30s 采样，
+  `CountPendingNotifyTasks`）、`notify_lease_renew_failures_total{reason}`、`notify_authority_generation`。
+- **Edge/SSE（OBS-05）**：`edge_reconnect_total`（sseclient 重连路径）、`edge_sse_gap_total`（collector gap 标记）。
+- **文档**：docs/08 §3 指标清单重写为实际注册名（业务 gauges 标注 P9-OBS-06 待实现）。
+
+### 验收
+
+- `golangci-lint` 0 issues；`go test ./...`（PG/Kafka resident）全绿。
+- 每条指标均有 testutil 断言（计数增量/直方图样本/DLQ 标签计数/gauges 值）。
+- 环境注记：Docker Desktop 两次自行退出，重启后用 `make dev-deps` 恢复，无代码影响。
+
+### 待办（P9 剩余）
+
+OBS-06 业务 Gauges、OBS-07 PrometheusRule+独立兜底通道、MC-01 产品内指标中心（需数据源评审）、
+CH-01 ClickHouse 归档（INC-007 联动）、INT-01 真实集成（BLOCKED）。
