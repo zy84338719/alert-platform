@@ -50,6 +50,14 @@ func (m multiStore) CleanupReceipts(ctx context.Context, cutoff time.Time) (int6
 	return d, r, nil
 }
 
+// Leaser is the named single-writer lease port (P10-008): with N worker
+// replicas only the lease owner runs the cleanup. Optional — unit tests and
+// single-process tooling leave it unset.
+type Leaser interface {
+	AcquireNamedLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error)
+	ReleaseNamedLease(ctx context.Context, name, owner string) error
+}
+
 // Service runs the retention loop.
 type Service struct {
 	store    Store
@@ -57,6 +65,8 @@ type Service struct {
 	interval time.Duration
 	deleted  prometheus.Counter
 	retained prometheus.Counter
+	leaser   Leaser
+	owner    string
 }
 
 // NewService builds the retention job. Counters register on the REGISTRY
@@ -87,17 +97,38 @@ func NewService(store Store, window, interval time.Duration, reg prometheus.Regi
 // prometheus.MustRegister — exposed here for tests.
 func (s *Service) Counters() (deleted, retained prometheus.Counter) { return s.deleted, s.retained }
 
+// SetLeaser enables single-writer leasing (worker wiring).
+func (s *Service) SetLeaser(l Leaser) { s.leaser = l }
+
+// SetOwner enables leasing with this replica's owner id; empty disables it.
+func (s *Service) SetOwner(owner string) { s.owner = owner }
+
 // Run cleans until ctx is done.
 func (s *Service) Run(ctx context.Context) error {
 	logx.CtxInfo(ctx, "retention job started",
 		"window", s.window.String(), "interval", s.interval.String())
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	defer func() {
+		if s.leaser != nil && s.owner != "" {
+			_ = s.leaser.ReleaseNamedLease(context.Background(), "retention.cleanup", s.owner)
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			if s.leaser != nil && s.owner != "" {
+				ok, err := s.leaser.AcquireNamedLease(ctx, "retention.cleanup", s.owner, s.interval*3)
+				if err != nil {
+					logx.CtxError(ctx, "retention lease failed", logx.ErrKey, err)
+					continue
+				}
+				if !ok {
+					continue // another replica owns this tick
+				}
+			}
 			s.RunOnce(ctx)
 		}
 	}

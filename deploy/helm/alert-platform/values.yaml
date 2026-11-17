@@ -21,6 +21,10 @@ api:
 
 worker:
   enabled: true
+  # P10-008: all|processor|notifier|maintenance. Scale Kafka consumption with
+  # a separate Deployment using profile=processor so singleton loops do not
+  # multiply; maintenance loops are DB-leased even if replicated by mistake.
+  profile: "all"
   replicas: 2
   resources: { requests: { cpu: 100m, memory: 128Mi }, limits: { cpu: "1", memory: 512Mi } }
   env:

@@ -52,6 +52,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	profile, err := parseProfile(cfg.WorkerProfile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	// The processor consume loop blocks the primary goroutine; relay and the
 	// health scheduler run beside it. Everything stops with the app context.
@@ -67,76 +72,78 @@ func main() {
 
 		brokers := strings.Split(cfg.KafkaBrokers, ",")
 
-		// processor: Kafka -> PG (offsets after commit; DLQ for poison).
 		store := postgres.NewStore(pool)
-		processorSvc := processor.NewService(store)
-		consumer := kafka.NewConsumer(brokers, cfg.KafkaTopic, cfg.KafkaGroupID, cfg.KafkaDLQTopic)
-		defer func() { _ = consumer.Close() }()
-
-		// relay: domain_outbox -> lifecycle topic. Single-writer lease keeps
-		// per-aggregate order across replicas; terminal rows dead-letter.
-		relaySvc := relay.NewService(store, kafka.NewProducer(brokers, cfg.KafkaLifecycleTopic), uuid.NewString())
-		relaySvc.SetTuning(0, 0, 0, cfg.OutboxMaxAttempts)
-
-		// scheduler: source-health stale reconciliation.
-		healthSvc := health.NewService(store)
-		healthSvc.SetTuning(mustDuration(cfg.StaleAfter), mustDuration(cfg.ReconcileInterval))
-
-		// notifier: notification_outbox -> channels (NOTI-001/002). The
-		// adapter converts infrastructure results to the application type.
-		notifySvc := notify.NewService(store, &channelSenderAdapter{
-			sender: channel.NewHTTPSender(cfg.AllowPrivateChannels),
-		})
-		notifySvc.SetMode(cfg.NotifyMode) // REL-001: active|shadow|off
-		notifySvc.SetMaxAttempts(cfg.NotifyMaxAttempts)
-		// P8-P0-01: establish the persisted authority generation BEFORE any
-		// producer enqueues tasks — a fresh Pod must know which era owns
-		// delivery, or a shadow→active rollout would replay history.
-		if err := notifySvc.InitAuthority(ctx); err != nil {
-			return fmt.Errorf("notify authority: %w", err)
-		}
-
-		// telemetry sampler (P9-OBS-06): business gauges every 30s; auxiliary.
-		telemetrySvc := telemetry.NewService(store)
-
-		// transition archiver (P9-CH-01): PG -> ClickHouse, auxiliary and
-		// disabled unless ALERT_CLICKHOUSE_URL is configured.
-		var archiveSvc *archive.Service
-		if cfg.ClickhouseURL != "" {
-			archiveSvc = archive.NewService(postgres.NewArchiveStore(pool), clickhouse.New(
-				cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword),
-				uuid.NewString()) // single-writer lease owner
-			archiveSvc.SetTuning(mustDurationOr(cfg.ArchiveInterval, 10*time.Second),
-				cfg.ArchiveBatch, cfg.ArchiveMaxBatches, cfg.ArchiveMaxAttempts)
-		}
-
-		// retention: receipts cleanup (RETN-001) + notifications/audit (RETN-002);
-		// counters join the registry the /metrics endpoint serves.
-		retentionSvc := retention.NewService(retention.Multi(store, store),
-			mustDurationOr(cfg.RetentionReceipts, 7*24*time.Hour),
-			mustDurationOr(cfg.RetentionInterval, time.Hour),
-			oekitmetrics.Registry)
-
 		// P1-03 supervision: critical loops fail-stop, auxiliary loops degrade
 		// readiness. The readiness view joins /healthz + /readyz.
 		// P9-OBS-07: independent self-alert channel (never via notification_outbox).
 		selfAlerts := channel.NewSelfAlerter(cfg.FallbackWebhook, cfg.FallbackAllowPrivate)
-
 		group := worker.NewGroup()
-		group.Go(worker.Task{Name: "relay", Critical: true, Run: relaySvc.Run})
-		group.Go(worker.Task{Name: "notifier", Critical: true, Run: notifySvc.Run})
-		escSvc := escalation.NewService(store, store)
-		escSvc.SetOwner(uuid.NewString()) // single-flight across replicas
-		group.Go(worker.Task{Name: "escalation", Critical: true, Run: escSvc.Run})
-		group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
-		group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})
-		group.Go(worker.Task{Name: "telemetry", Critical: false, Run: telemetrySvc.Run})
-		if archiveSvc != nil {
-			group.Go(worker.Task{Name: "archive", Critical: false, Run: archiveSvc.Run})
+
+		// processor: Kafka -> PG (offsets after commit; DLQ for poison).
+		// Consumer-group scaling only: this profile starts no singleton loops.
+		if profile.Processor {
+			processorSvc := processor.NewService(store)
+			consumer := kafka.NewConsumer(brokers, cfg.KafkaTopic, cfg.KafkaGroupID, cfg.KafkaDLQTopic)
+			defer func() { _ = consumer.Close() }()
+			group.Go(worker.Task{Name: "processor", Critical: true, Run: func(ctx context.Context) error {
+				return consumer.Run(ctx, processorSvc.Handle)
+			}})
 		}
-		group.Go(worker.Task{Name: "processor", Critical: true, Run: func(ctx context.Context) error {
-			return consumer.Run(ctx, processorSvc.Handle)
-		}})
+
+		// notifier: relay (leased, ordered) + notifier (leased) + escalation
+		// (single-flight). Safe to run on several replicas.
+		if profile.Notifier {
+			relaySvc := relay.NewService(store, kafka.NewProducer(brokers, cfg.KafkaLifecycleTopic), uuid.NewString())
+			relaySvc.SetTuning(0, 0, 0, cfg.OutboxMaxAttempts)
+			group.Go(worker.Task{Name: "relay", Critical: true, Run: relaySvc.Run})
+
+			notifySvc := notify.NewService(store, &channelSenderAdapter{
+				sender: channel.NewHTTPSender(cfg.AllowPrivateChannels),
+			})
+			notifySvc.SetMode(cfg.NotifyMode) // REL-001: active|shadow|off
+			notifySvc.SetMaxAttempts(cfg.NotifyMaxAttempts)
+			// P8-P0-01: establish the persisted authority generation BEFORE any
+			// producer enqueues tasks — a fresh Pod must know which era owns
+			// delivery, or a shadow→active rollout would replay history.
+			if err := notifySvc.InitAuthority(ctx); err != nil {
+				return fmt.Errorf("notify authority: %w", err)
+			}
+			group.Go(worker.Task{Name: "notifier", Critical: true, Run: notifySvc.Run})
+
+			escSvc := escalation.NewService(store, store)
+			escSvc.SetOwner(uuid.NewString()) // single-flight across replicas
+			group.Go(worker.Task{Name: "escalation", Critical: true, Run: escSvc.Run})
+		}
+
+		// maintenance: singleton loops. Every one additionally holds a DB
+		// lease, so even an accidental second maintenance replica is safe.
+		if profile.Maintenance {
+			healthSvc := health.NewService(store)
+			healthSvc.SetTuning(mustDuration(cfg.StaleAfter), mustDuration(cfg.ReconcileInterval))
+			group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
+
+			retentionSvc := retention.NewService(retention.Multi(store, store),
+				mustDurationOr(cfg.RetentionReceipts, 7*24*time.Hour),
+				mustDurationOr(cfg.RetentionInterval, time.Hour),
+				oekitmetrics.Registry)
+			retentionSvc.SetLeaser(store)
+			retentionSvc.SetOwner(uuid.NewString())
+			group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})
+
+			telemetrySvc := telemetry.NewService(store)
+			telemetrySvc.SetLeaser(store)
+			telemetrySvc.SetOwner(uuid.NewString())
+			group.Go(worker.Task{Name: "telemetry", Critical: false, Run: telemetrySvc.Run})
+
+			if cfg.ClickhouseURL != "" {
+				archiveSvc := archive.NewService(postgres.NewArchiveStore(pool), clickhouse.New(
+					cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword),
+					uuid.NewString()) // single-writer lease owner
+				archiveSvc.SetTuning(mustDurationOr(cfg.ArchiveInterval, 10*time.Second),
+					cfg.ArchiveBatch, cfg.ArchiveMaxBatches, cfg.ArchiveMaxAttempts)
+				group.Go(worker.Task{Name: "archive", Critical: false, Run: archiveSvc.Run})
+			}
+		}
 		platform.RegisterRuntimeCheck("background-tasks", group.ReadinessCheck())
 		platform.RegisterRuntimeCheck("postgres", func(ctx context.Context) error {
 			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

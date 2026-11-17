@@ -70,11 +70,19 @@ func registerMetrics() {
 	})
 }
 
+// Leaser is the named single-writer lease port (P10-008).
+type Leaser interface {
+	AcquireNamedLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error)
+	ReleaseNamedLease(ctx context.Context, name, owner string) error
+}
+
 // Service periodically refreshes the business gauges.
 type Service struct {
 	store    Store
 	interval time.Duration
 	now      func() time.Time
+	leaser   Leaser
+	owner    string
 }
 
 // NewService builds the sampler (default tick 30s).
@@ -90,17 +98,38 @@ func (s *Service) SetTuning(interval time.Duration) {
 	}
 }
 
+// SetLeaser enables single-writer sampling (worker wiring).
+func (s *Service) SetLeaser(l Leaser) { s.leaser = l }
+
+// SetOwner enables leasing with this replica's owner id; empty disables it.
+func (s *Service) SetOwner(owner string) { s.owner = owner }
+
 // Run samples until ctx is done. Failures are logged and retried on the next
 // tick — a metrics outage must never affect alert processing.
 func (s *Service) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	logx.CtxInfo(ctx, "telemetry sampler started", "interval", s.interval.String())
+	defer func() {
+		if s.leaser != nil && s.owner != "" {
+			_ = s.leaser.ReleaseNamedLease(context.Background(), "telemetry.sampler", s.owner)
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			if s.leaser != nil && s.owner != "" {
+				ok, err := s.leaser.AcquireNamedLease(ctx, "telemetry.sampler", s.owner, s.interval*3)
+				if err != nil {
+					logx.CtxError(ctx, "telemetry lease failed", logx.ErrKey, err)
+					continue
+				}
+				if !ok {
+					continue // another replica samples; gauges are global
+				}
+			}
 			_ = s.sample(ctx)
 		}
 	}

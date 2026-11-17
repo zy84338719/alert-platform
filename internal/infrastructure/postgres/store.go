@@ -1460,6 +1460,17 @@ func (s *Store) releaseComponentLease(ctx context.Context, name, owner string) e
 	return err
 }
 
+// AcquireNamedLease is the generic component_leases entry point (AUD-008 /
+// P10-008). Component-specific wrappers below keep call sites readable.
+func (s *Store) AcquireNamedLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error) {
+	return s.acquireComponentLease(ctx, name, owner, ttl)
+}
+
+// ReleaseNamedLease drops a named lease if this owner still holds it.
+func (s *Store) ReleaseNamedLease(ctx context.Context, name, owner string) error {
+	return s.releaseComponentLease(ctx, name, owner)
+}
+
 // AcquireLease renews the escalation/correlation single-flight lease
 // (AUD-008): even with N worker replicas, only one runs the scan per tick.
 func (s *Store) AcquireLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {

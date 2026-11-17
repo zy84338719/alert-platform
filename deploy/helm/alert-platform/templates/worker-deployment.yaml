@@ -41,6 +41,8 @@ spec:
             {{- end }}
             - name: ALERT_WORKER_ADDR
               value: ":8081"
+            - name: WORKER_PROFILE
+              value: {{ .Values.worker.profile | default "all" | quote }}
 {{- if .Values.pdb.enabled }}
 ---
 apiVersion: policy/v1

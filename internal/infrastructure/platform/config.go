@@ -56,6 +56,11 @@ type Config struct {
 	IngestRatePerSec int `yaml:"ingest_rate_per_sec" env:"ALERT_INGEST_RATE_PER_SEC" default:"500"`
 	IngestBurst      int `yaml:"ingest_burst" env:"ALERT_INGEST_BURST" default:"1000"`
 
+	// WorkerProfile (P10-008) selects which loops alert-worker starts:
+	// all|processor|notifier|maintenance. Scale processor replicas with
+	// profile=processor so archive/retention/telemetry stay single-instance.
+	WorkerProfile string `yaml:"worker_profile" env:"WORKER_PROFILE" default:"all"`
+
 	// NotifyMode (REL-001): active|shadow|off — notification authority switch.
 	NotifyMode string `yaml:"notify_mode" env:"ALERT_NOTIFY_MODE" default:"active"`
 	// NotifyMaxAttempts dead-letters a task after N failed delivery attempts
