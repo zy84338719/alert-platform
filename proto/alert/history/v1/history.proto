@@ -1,0 +1,44 @@
+syntax = "proto3";
+package alert.history.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/history/v1;historyv1";
+import "google/protobuf/timestamp.proto";
+import "api/api.proto";
+
+// P10-007: historical transition query contract. PG serves the hot window,
+// ClickHouse the archive; the response states which backend answered and
+// whether more rows remain.
+message HistoryTransition {
+  string transition_id = 1;
+  string instance_id = 2;
+  string from_state = 3;
+  string to_state = 4;
+  string event_id = 5;
+  google.protobuf.Timestamp transition_at = 6;
+}
+
+message ListHistoryTransitionsRequest {
+  // RFC3339 or unix seconds; defaults: from = now-24h, to = now.
+  string from = 1 [(api.query) = "from"];
+  string to = 2 [(api.query) = "to"];
+  int32 limit = 3 [(api.query) = "limit"];
+}
+
+message ListHistoryTransitionsResponse {
+  repeated HistoryTransition transitions = 1;
+  // archived: ClickHouse answered (any part of the range).
+  bool archived = 2;
+  // truncated: more rows exist; use next_from as the next page's upper bound.
+  bool truncated = 3;
+  google.protobuf.Timestamp next_from = 4;
+  // coverage: full | pg-window-only (archive not configured).
+  string coverage = 5;
+  google.protobuf.Timestamp from = 6;
+  google.protobuf.Timestamp to = 7;
+  int32 limit = 8;
+}
+
+service HistoryService {
+  rpc ListHistoryTransitions(ListHistoryTransitionsRequest) returns (ListHistoryTransitionsResponse) {
+    option (api.get) = "/history/v1/transitions";
+  }
+}

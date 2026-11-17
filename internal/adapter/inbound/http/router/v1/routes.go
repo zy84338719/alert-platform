@@ -17,6 +17,8 @@ func Register(r *server.Hertz) {
 	registerSilence(r)
 	registerChannel(r)
 	registerIncident(r)
+	registerMetrics(r)
+	registerHistory(r)
 }
 
 func registerIngest(r *server.Hertz) {
@@ -140,6 +142,31 @@ func registerIncident(r *server.Hertz) {
 				__7bincident_id_7d0 := _v10.Group("/:incident_id", __7bincident_id_7d0Mw()...)
 				__7bincident_id_7d0.POST("/acknowledge", append(_acknowledgeincidentMw(), v1.AcknowledgeIncident)...)
 			}
+		}
+	}
+}
+
+func registerMetrics(r *server.Hertz) {
+
+	root := r.Group("/", rootMw()...)
+	{
+		_metrics := root.Group("/metrics", _metricsMw()...)
+		{
+			_v1 := _metrics.Group("/v1", _v1Mw()...)
+			_v1.GET("/catalog", append(_metricscatalogMw(), v1.MetricsCatalog)...)
+			_v1.GET("/query", append(_metricsqueryrangeMw(), v1.MetricsQueryRange)...)
+		}
+	}
+}
+
+func registerHistory(r *server.Hertz) {
+
+	root := r.Group("/", rootMw()...)
+	{
+		_history := root.Group("/history", _historyMw()...)
+		{
+			_v1 := _history.Group("/v1", _v1Mw()...)
+			_v1.GET("/transitions", append(_listhistorytransitionsMw(), v1.ListHistoryTransitions)...)
 		}
 	}
 }

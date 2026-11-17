@@ -5,6 +5,9 @@
 - 供应商层：DeepFlow/Alertmanager/HUATUO 原生协议不受本项目控制，由 Adapter + fixtures 固定映射。
 - 交换层：`proto/alert/event/v1` 的 Protobuf 是中央事件和内部边缘上传的权威模型。
 - 管理 API：`proto/alert/{source,incident,notification,policy,ingest}/v1` 用 IDL 描述。
+- 运维/分析 API（P10-007）：`proto/alert/metrics/v1`（目录/查询，platform|tenant 分级）与
+  `proto/alert/history/v1`（历史 transition 查询，PG/CH 路由标记）同样由 IDL 定义，
+  `cmd/alert-api` 不再手写这两组路由（统一走 `GeneratedRegister`）。
 - Domain：Go 领域类型和规则为独立实体，不能把生成的 `.pb.go` 当成 DDD Aggregate。
 
 ## 2. 命名约束

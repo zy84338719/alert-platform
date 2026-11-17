@@ -129,13 +129,7 @@ func main() {
 		httpv1.SetOpsStore(postgres.NewStore(pool))
 		httpv1.SetEdgeAPIKey(cfg.EdgeAPIKey)
 		httpv1.RegisterPlatformAPI(h)
-		// P9-MC-01: console metrics center (Prometheus proxy, whitelisted).
-		// Registered even when unconfigured so the console can show a clear
-		// "backend not configured" state instead of a 404.
-		h.GET("/metrics/v1/catalog", httpv1.MetricsCatalog)
-		h.GET("/metrics/v1/query", httpv1.MetricsQueryRange)
 		// P9-CH-01: PG window + optional ClickHouse archive.
-		h.GET("/history/v1/transitions", httpv1.ListHistoryTransitions)
 		console.Register(h)
 	}
 	if err := platform.RunService(cfg, platform.ComponentAPI, version, setup); err != nil {

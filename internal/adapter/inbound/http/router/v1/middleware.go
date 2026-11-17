@@ -235,3 +235,28 @@ func __7bincident_id_7d0Mw() []app.HandlerFunc {
 	// your code...
 	return nil
 }
+
+func _metricsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _metricscatalogMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _metricsqueryrangeMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _historyMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}
+
+func _listhistorytransitionsMw() []app.HandlerFunc {
+	// your code...
+	return nil
+}

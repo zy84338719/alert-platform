@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -57,9 +58,20 @@ func TestHistoryAPI(t *testing.T) {
 	})
 	t.Run("pg window answers archived=false", func(t *testing.T) {
 		w := get(t, h, path, "tok-auditor")
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"archived":false`) ||
-			!strings.Contains(w.Body.String(), "t-1") {
+		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Archived    bool `json:"archived"`
+			Transitions []struct {
+				TransitionID string `json:"transition_id"`
+			} `json:"transitions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v body=%s", err, w.Body.String())
+		}
+		if resp.Archived || len(resp.Transitions) != 1 || resp.Transitions[0].TransitionID != "t-1" {
+			t.Fatalf("resp=%+v body=%s", resp, w.Body.String())
 		}
 	})
 	t.Run("invalid range is 400", func(t *testing.T) {

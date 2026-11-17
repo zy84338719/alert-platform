@@ -1,0 +1,58 @@
+syntax = "proto3";
+package alert.metrics.v1;
+option go_package = "github.com/example/alert-platform/gen/go/alert/metrics/v1;metricsv1";
+import "api/api.proto";
+
+// P10-007: metrics-center contract. The server picks the PromQL from a
+// whitelisted catalog; clients can only name a metric and a bounded window.
+message MetricInfo {
+  string name = 1;
+  string unit = 2;
+  string description = 3;
+  // tier: platform (operator-only, cross-tenant) | tenant (server injects the
+  // caller's tenant matcher).
+  string tier = 4;
+}
+
+message MetricsCatalogRequest {}
+
+message MetricsCatalogResponse {
+  repeated MetricInfo metrics = 1;
+}
+
+message MetricsQueryRangeRequest {
+  string metric = 1 [(api.query) = "metric"];
+  // RFC3339 or unix seconds; empty uses server defaults.
+  string start = 2 [(api.query) = "start"];
+  string end = 3 [(api.query) = "end"];
+  // "60s"/"1m" or plain seconds.
+  string step = 4 [(api.query) = "step"];
+}
+
+message MetricPoint {
+  double timestamp = 1;
+  double value = 2;
+}
+
+message MetricSeries {
+  map<string, string> labels = 1;
+  repeated MetricPoint points = 2;
+}
+
+message MetricsQueryRangeResponse {
+  string metric = 1;
+  string unit = 2;
+  string start = 3;
+  string end = 4;
+  int32 step_seconds = 5;
+  repeated MetricSeries series = 6;
+}
+
+service MetricsService {
+  rpc MetricsCatalog(MetricsCatalogRequest) returns (MetricsCatalogResponse) {
+    option (api.get) = "/metrics/v1/catalog";
+  }
+  rpc MetricsQueryRange(MetricsQueryRangeRequest) returns (MetricsQueryRangeResponse) {
+    option (api.get) = "/metrics/v1/query";
+  }
+}

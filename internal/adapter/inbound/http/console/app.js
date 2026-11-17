@@ -507,10 +507,11 @@ function drawMetricChart(box, res) {
     return;
   }
   const W = 860, H = 260, P = 40;
+  // IDL shape (P10-007): points are {timestamp, value} objects.
   const pts = series.flatMap((s) => s.points || []);
-  const minX = Math.min(...pts.map((p) => p[0]));
-  const maxX = Math.max(...pts.map((p) => p[0]));
-  const values = pts.map((p) => p[1]);
+  const minX = Math.min(...pts.map((p) => p.timestamp));
+  const maxX = Math.max(...pts.map((p) => p.timestamp));
+  const values = pts.map((p) => p.value);
   let maxY = Math.max(...values);
   let minY = Math.min(0, ...values);
   if (maxY === minY) maxY = minY + 1;
@@ -518,7 +519,7 @@ function drawMetricChart(box, res) {
   const y = (v) => H - P - ((v - minY) / (maxY - minY)) * (H - 2 * P);
   const colors = ["#4f8cff", "#ff6b6b", "#2ecc71", "#f1c40f", "#9b59b6"];
   const paths = series.map((s, i) => {
-    const line = (s.points || []).map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+    const line = (s.points || []).map((p) => `${x(p.timestamp).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
     return `<polyline fill="none" stroke="${colors[i % colors.length]}" stroke-width="1.6" points="${line}"/>`;
   }).join("");
   const legend = series.map((s, i) => {
@@ -527,7 +528,7 @@ function drawMetricChart(box, res) {
       : "(all)";
     const last = (s.points || []).slice(-1)[0];
     return `<div><span style="display:inline-block;width:10px;height:10px;background:${colors[i % colors.length]};margin-right:6px"></span>` +
-      esc(labels) + ' · 最新 <b>' + (last ? esc(String(last[1].toFixed(3))) : "—") + "</b></div>";
+      esc(labels) + ' · 最新 <b>' + (last ? esc(String(last.value.toFixed(3))) : "—") + "</b></div>";
   }).join("");
   const yTop = esc(String(maxY.toFixed(3)));
   const yBottom = esc(String(minY.toFixed(3)));

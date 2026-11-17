@@ -102,7 +102,7 @@ idl-breaking-drill:
 # once per service IDL (middleware.go accumulates hooks across runs) and merge
 # the Register bodies into routes.go. Existing handler bodies are never
 # overwritten (hz keeps handwritten code).
-IDL_FILES := ingest source query policy silence channel incident
+IDL_FILES := ingest source query policy silence channel incident metrics history
 idl-hz:
 	@for svc in $(IDL_FILES); do \
 		PATH="$(CURDIR)/$(IDL_BIN):$$PATH" GOWORK=off go tool hz update \
