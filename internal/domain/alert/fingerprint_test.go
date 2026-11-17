@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -92,5 +93,23 @@ func TestFingerprintVersionPrefixDrift(t *testing.T) {
 	bare := sha256.Sum256(raw)
 	if got == hex.EncodeToString(bare[:]) {
 		t.Fatal("fingerprint ignored the version prefix")
+	}
+}
+
+// AUD-003（#12）：身份不完整必须携带 ErrIncompleteIdentity sentinel ——
+// processor 用 errors.Is 决定 DLQ 隔离；裸 errors.New 会让毒消息落 transient
+// 路径 → 3 次重试后 fail-stop、重启重放，分区永久阻塞。
+func TestFingerprintIncompleteIdentitySentinel(t *testing.T) {
+	cases := []Identity{
+		{TenantID: "t", SourceID: "s", RuleID: "r", ClusterID: "c"},    // no uid
+		{TenantID: "t", SourceID: "s", RuleID: "r", EntityUID: "u"},    // no cluster
+		{TenantID: "t", SourceID: "s", ClusterID: "c", EntityUID: "u"}, // no rule
+		{TenantID: "t", RuleID: "r", ClusterID: "c", EntityUID: "u"},   // no source
+		{SourceID: "s", RuleID: "r", ClusterID: "c", EntityUID: "u"},   // no tenant
+	}
+	for i, id := range cases {
+		if _, err := Fingerprint(id); !errors.Is(err, ErrIncompleteIdentity) {
+			t.Fatalf("case %d: err = %v, want ErrIncompleteIdentity", i, err)
+		}
 	}
 }

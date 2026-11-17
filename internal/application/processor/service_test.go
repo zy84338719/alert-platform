@@ -119,3 +119,39 @@ func TestHandleMetricsOutcomes(t *testing.T) {
 		t.Fatal("processor duration histogram recorded no observations")
 	}
 }
+
+// realFingerprintStore exercises the REAL domain fingerprint (no injected
+// sentinel) — the regression that AUD-003 found: the processor's Permanent
+// classification relied on errors.Is, which a fresh errors.New broke.
+type realFingerprintStore struct{}
+
+func (realFingerprintStore) ApplyEvent(_ context.Context, ev *eventv1.AlertEvent) (bool, error) {
+	_, err := domainalert.Fingerprint(domainalert.Identity{
+		TenantID: ev.GetTenantId(), SourceID: ev.GetSource().GetSourceId(),
+		RuleID: ev.GetSource().GetExternalRuleId(), ClusterID: ev.GetResource().GetClusterId(),
+		EntityUID: ev.GetResource().GetResourceUid(),
+	})
+	return false, err
+}
+
+// AUD-003（#12）：身份不完整消息必须经真实 Fingerprint 路径被判 Permanent
+// （进 DLQ），而不是 transient crash-loop。
+func TestHandleIncompleteIdentityViaRealFingerprint(t *testing.T) {
+	wire, err := proto.Marshal(&eventv1.AlertEvent{
+		TransportId: "aud003-1", EventId: "e1", TenantId: "t1",
+		Source:   &eventv1.SourceRef{SourceId: "s1"},    // no external_rule_id
+		Resource: &eventv1.ResourceRef{ClusterId: "c1"}, // no resource_uid
+		Signal:   eventv1.EventSignal_EVENT_SIGNAL_FIRING,
+		Severity: eventv1.Severity_SEVERITY_CRITICAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = NewService(realFingerprintStore{}).Handle(context.Background(), IncomingMessage{Value: wire})
+	if !IsPermanent(err) {
+		t.Fatalf("err = %v, want Permanent (DLQ quarantine)", err)
+	}
+	if !errors.Is(err, domainalert.ErrIncompleteIdentity) {
+		t.Fatalf("sentinel lost: %v", err)
+	}
+}

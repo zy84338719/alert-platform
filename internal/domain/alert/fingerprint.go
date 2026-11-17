@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // Identity keeps exact source deduplication separate from cross-source correlation.
@@ -30,7 +31,11 @@ const fingerprintVersion = "alert-fingerprint/v1\n"
 
 func Fingerprint(i Identity) (string, error) {
 	if i.TenantID == "" || i.SourceID == "" || i.RuleID == "" || i.ClusterID == "" || i.EntityUID == "" {
-		return "", errors.New("incomplete alert identity")
+		// MUST wrap the sentinel: the processor classifies DLQ candidates via
+		// errors.Is(err, ErrIncompleteIdentity). A fresh errors.New here broke
+		// that chain (AUD-003): such events fell into the transient path and
+		// crash-looped the partition forever instead of being quarantined.
+		return "", fmt.Errorf("%w: tenant/source/rule/cluster/entity_uid required", ErrIncompleteIdentity)
 	}
 	// JSON object keys have deterministic ordering in encoding/json.
 	raw, err := json.Marshal(i)
