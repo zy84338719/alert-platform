@@ -5,6 +5,7 @@ package v1
 
 import (
 	"context"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -17,6 +18,17 @@ import (
 	mw "github.com/oekit/middleware"
 	ekiterrors "github.com/oekit/pkg/errors"
 )
+
+// protoTimeOrNow maps an absent timestamppb to now. protojson/proto3 callers
+// may omit optional-looking timestamps, and (*timestamppb.Timestamp)(nil)
+// .AsTime() returns the Unix epoch — a silence starting in 1970 or a preview
+// "at 1970" is never the intent (AUD-013).
+func protoTimeOrNow(ts *timestamppb.Timestamp, fallback time.Time) time.Time {
+	if ts == nil || (ts.GetSeconds() == 0 && ts.GetNanos() == 0) {
+		return fallback
+	}
+	return ts.AsTime()
+}
 
 func silenceToProto(sl *policymgmt.Silence) *v1.Silence {
 	return &v1.Silence{
@@ -43,9 +55,20 @@ func CreateSilence(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
+	now := time.Now().UTC()
+	startsAt := protoTimeOrNow(req.GetStartsAt(), now)
+	if req.GetEndsAt() == nil {
+		mw.Fail(ctx, c, ekiterrors.NewBadRequestError("ends_at is required"))
+		return
+	}
+	endsAt := protoTimeOrNow(req.GetEndsAt(), now)
+	if !endsAt.After(startsAt) {
+		mw.Fail(ctx, c, ekiterrors.NewBadRequestError("ends_at must be after starts_at"))
+		return
+	}
 	sl := &policymgmt.Silence{
 		Matchers: matchersToDomain(req.GetMatchers()),
-		StartsAt: req.GetStartsAt().AsTime(), EndsAt: req.GetEndsAt().AsTime(),
+		StartsAt: startsAt, EndsAt: endsAt,
 		CreatedBy: id.ActorID, Reason: req.GetReason(),
 	}
 	if err := PolicySvc.CreateSilence(ctx, id.TenantID, sl); err != nil {
@@ -131,7 +154,7 @@ func PreviewSilences(ctx context.Context, c *app.RequestContext) {
 	if !ok {
 		return
 	}
-	at := req.GetAt().AsTime()
+	at := protoTimeOrNow(req.GetAt(), time.Now().UTC())
 	matches, err := PolicySvc.PreviewSilences(ctx, id.TenantID, req.GetLabels(), at)
 	if err != nil {
 		mw.Fail(ctx, c, err)

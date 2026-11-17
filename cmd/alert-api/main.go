@@ -97,6 +97,14 @@ func main() {
 		defer cancel()
 		return pool.Ping(pingCtx)
 	})
+	// AUD-013: ingest accepts events into Kafka, so broker reachability is a
+	// readiness dependency — a live PG alone must not report "ready" while
+	// every publish fails.
+	platform.RegisterRuntimeCheck("kafka", func(ctx context.Context) error {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return producer.Ping(pingCtx)
+	})
 
 	// P9-MC-01: the metrics center needs a Prometheus HTTP API; empty URL
 	// leaves the endpoints fail-closed (503) with a clear message.

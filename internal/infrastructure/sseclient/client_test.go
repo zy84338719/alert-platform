@@ -241,3 +241,35 @@ func TestHeartbeatKeepAliveWhileStreaming(t *testing.T) {
 		t.Fatalf("connections = %d, want 1 — an actively streaming connection must not be force-reconnected", requests)
 	}
 }
+
+// AUD-013: reconnects use capped exponential backoff with FULL jitter, so a
+// central restart cannot be amplified by every edge retrying in lockstep.
+func TestReconnectDelayBounds(t *testing.T) {
+	cases := []struct {
+		attempt int
+		max     time.Duration
+	}{
+		{0, 500 * time.Millisecond},
+		{1, time.Second},
+		{3, 4 * time.Second},
+		{10, reconnectCap},
+		{40, reconnectCap},
+	}
+	for _, tc := range cases {
+		for i := 0; i < 100; i++ {
+			d := reconnectDelay(tc.attempt)
+			if d < 0 || d > tc.max {
+				t.Fatalf("attempt %d: delay %s outside [0,%s]", tc.attempt, d, tc.max)
+			}
+		}
+	}
+	// Jitter must actually spread: 200 samples at attempt 10 cannot all be
+	// identical unless the RNG/jitter is broken.
+	seen := map[time.Duration]bool{}
+	for i := 0; i < 200; i++ {
+		seen[reconnectDelay(10)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("reconnect delay is not jittered: %v", seen)
+	}
+}

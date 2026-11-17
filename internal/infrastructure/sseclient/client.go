@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,27 +70,69 @@ func (c *Client) LastID() string {
 	return c.lastID
 }
 
+// reconnectBase / reconnectCap bound the exponential backoff. Full jitter is
+// applied below so a fleet of edges reconnecting after one central restart
+// does not stampede the server (AUD-013).
+const (
+	reconnectBase = 500 * time.Millisecond
+	reconnectCap  = 30 * time.Second
+	// A connection that survived this long (or delivered a healthy stream) is
+	// considered stable; the next failure starts the backoff at attempt 0.
+	reconnectStableAfter = time.Minute
+)
+
+// reconnectDelay returns the full-jitter delay for one attempt:
+// uniform(0, min(cap, base*2^attempt)).
+func reconnectDelay(attempt int) time.Duration {
+	ceiling := reconnectBase
+	for i := 0; i < attempt && ceiling < reconnectCap; i++ {
+		ceiling *= 2
+	}
+	if ceiling > reconnectCap {
+		ceiling = reconnectCap
+	}
+	if ceiling <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(ceiling) + 1))
+}
+
 // Run streams until ctx is done or handler fails permanently. Reconnects use
-// Last-Event-ID. Returns ctx.Canceled on shutdown, otherwise the fatal error.
+// Last-Event-ID with capped exponential backoff + full jitter. Returns
+// ctx.Canceled on shutdown, otherwise the fatal error.
 func (c *Client) Run(ctx context.Context, handle Handler) error {
+	attempt := 0
 	for {
-		if err := c.streamOnce(ctx, handle); err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		started := time.Now()
+		err := c.streamOnce(ctx, handle)
+		if err == nil {
+			// Clean EOF (server closed the stream): reconnect with the cursor
+			// rather than treating it as termination.
+			err = io.EOF
+		}
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			return nil
+		}
+		if isPermanent(handleErr(err)) { // handler asked to stop
+			if unWrap(err) == ErrStop {
 				return nil
 			}
-			if isPermanent(handleErr(err)) { // handler asked to stop
-				if unWrap(err) == ErrStop {
-					return nil
-				}
-				return unWrap(err)
-			}
-			// transient: brief pause then reconnect (gap detection follows)
-			reconnectTotal.Inc()
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(500 * time.Millisecond):
-			}
+			return unWrap(err)
+		}
+		// A long-lived connection that fails is a new outage, not a retry
+		// storm: reset the backoff before computing the next delay.
+		if time.Since(started) >= reconnectStableAfter {
+			attempt = 0
+		}
+		reconnectTotal.Inc()
+		delay := reconnectDelay(attempt)
+		if attempt < 16 { // avoid overflow; the cap already saturates
+			attempt++
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
 		}
 	}
 }

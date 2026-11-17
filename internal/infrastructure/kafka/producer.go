@@ -29,7 +29,8 @@ const (
 // broker surfaces as a retriable error, never as a silent drop (docs/13
 // BASE-006).
 type Producer struct {
-	writer *kafka.Writer
+	writer  *kafka.Writer
+	brokers []string
 }
 
 // NewProducer builds a producer for one topic with acks=all, synchronous
@@ -49,7 +50,16 @@ func NewProducer(brokers []string, topic string) *Producer {
 	// keep consumers idempotent (transition id / outbox_id headers). Hash
 	// balancing only preserves order per key within this writer's stream —
 	// the relay enforces a single writer + per-key ordering (AUD-011).
-	return &Producer{writer: w}
+	return &Producer{writer: w, brokers: brokers}
+}
+
+// Ping performs a metadata round-trip so readiness reflects broker
+// reachability, not just a live TCP port (AUD-013). A new client per probe is
+// cheap at readiness cadence (one every few seconds).
+func (p *Producer) Ping(ctx context.Context) error {
+	cl := &kafka.Client{Addr: kafka.TCP(p.brokers...), Timeout: 2 * time.Second}
+	_, err := cl.Metadata(ctx, &kafka.MetadataRequest{})
+	return err
 }
 
 // Publish writes one message with the standard envelope headers. It blocks
