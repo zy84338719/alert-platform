@@ -71,6 +71,22 @@ spec:
           annotations:
             summary: "notification retry rate above 1/s"
             description: "A channel is failing transiently and retrying; check vendor status and channel config."
+        - alert: AlertPlatformEdgeWALRejected
+          expr: increase(alert_platform_edge_wal_rejected_total[5m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "edge WAL rejected vendor data"
+            description: "The edge could not durably append a batch (disk full/io error); vendor retries will amplify until the PVC is fixed."
+        - alert: AlertPlatformEdgeUploadPoison
+          expr: increase(alert_platform_edge_upload_poison_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "center permanently rejected an edge batch (4xx)"
+            description: "A poison batch is pinned at the WAL head; inspect the edge logs, fix/remove the batch, then replay."
         {{- with .Values.prometheusRule.extraRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

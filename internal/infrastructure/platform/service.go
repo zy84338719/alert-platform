@@ -3,16 +3,17 @@ package platform
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
-	oekithertz "github.com/oekit/hertz"
-	hmetrics "github.com/oekit/hertz/metrics"
 	"github.com/oekit/bootstrap"
 	"github.com/oekit/bootstrap/healthz"
 	"github.com/oekit/bootstrap/obs"
+	oekithertz "github.com/oekit/hertz"
+	hmetrics "github.com/oekit/hertz/metrics"
 	"github.com/oekit/logx"
 	mw "github.com/oekit/middleware"
 	"github.com/oekit/tracing"
@@ -52,6 +53,7 @@ func RunService(cfg *Config, component, version string, setup SetupFn) error {
 func RunServiceWith(cfg *Config, component, version string, setup SetupFn, run RunFn) error {
 	// Structured JSON logging; LOG_LEVEL (projected by LoadConfig) applies.
 	logx.UseSlog(component)
+	warnInsecureConfig(cfg, component)
 	// Framework (hlog) logs route through the same logx/slog pipeline.
 	hlog.SetSilentMode(true)
 	hlog.SetLogger(oekithertz.NewLogger(logx.NewSlogLogger(component)))
@@ -64,7 +66,7 @@ func RunServiceWith(cfg *Config, component, version string, setup SetupFn, run R
 		opts = append(opts, obs.WithTracing(tracing.Config{
 			ServiceName: component,
 			Endpoint:    cfg.OTLPEndpoint,
-			Insecure:    true,
+			Insecure:    cfg.OTLPInsecure,
 		}))
 	}
 	b, err := bootstrap.New(opts...)
@@ -79,11 +81,17 @@ func RunServiceWith(cfg *Config, component, version string, setup SetupFn, run R
 		h := server.New(
 			server.WithHostPorts(addr),
 			server.WithExitWaitTime(10*time.Second),
+			// Explicit body bound (AUD-016): the framework default (4MB) was
+			// implicit and did not match the ingest per-event cap. 8MB fits a
+			// useful batch while keeping an attacker's request bounded.
+			server.WithMaxRequestBodySize(MaxRequestBodyBytes),
 		)
 
 		// Standard stack: TraceID -> Recovery -> Response -> AccessLog.
 		// Recovery is mandatory (Hertz has no default panic handler).
 		h.Use(mw.DefaultMiddleware(mw.StackConfig{SkipPaths: probePaths})...)
+		// AUD-016: browser hardening for every response (console + API).
+		h.Use(SecurityHeaders())
 
 		// Health endpoints (bootstrap/healthz contract: all checks pass -> 200,
 		// any hard failure -> 503, soft dependency degraded -> 200 + "degraded").
@@ -136,4 +144,24 @@ func RunServiceWith(cfg *Config, component, version string, setup SetupFn, run R
 		<-bsApp.Context().Done()
 		return nil
 	})
+}
+
+// MaxRequestBodyBytes is the explicit HTTP request-body bound (AUD-016). It is
+// intentionally larger than ingest's per-event cap (256KB): one request may
+// carry several events, but the body can never be unbounded.
+const MaxRequestBodyBytes = 8 << 20
+
+// warnInsecureConfig surfaces production-hostile defaults without blocking
+// local/dev startup (AUD-016): plaintext OTLP export and a TLS-less PG DSN
+// are acceptable on a laptop, not in production.
+func warnInsecureConfig(cfg *Config, component string) {
+	ctx := context.Background()
+	if cfg.OTLPEndpoint != "" && cfg.OTLPInsecure {
+		logx.CtxWarn(ctx, "OTLP tracing is configured INSECURE (plaintext gRPC); set OTLP_INSECURE=false in production",
+			"component", component, "endpoint", cfg.OTLPEndpoint)
+	}
+	if strings.Contains(cfg.PGDSN, "sslmode=disable") {
+		logx.CtxWarn(ctx, "PG DSN disables TLS (sslmode=disable); require verify-full in production",
+			"component", component)
+	}
 }

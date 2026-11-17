@@ -8,6 +8,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,6 +51,33 @@ const (
 	eventSchemaVersion = "1"
 )
 
+// Size limits (AUD-007): a single event larger than kafka-go's default batch
+// size (1MB) made the WHOLE WriteMessages call fail with MessageTooLargeError,
+// rejecting every innocuous event in the batch and wedging the edge WAL head.
+// 256KB is far above real DeepFlow payloads and far below the broker limit.
+const (
+	MaxEventBytes  = 256 << 10
+	MaxBatchEvents = 1000
+)
+
+// ValidationError marks a caller-fixable rejection (400 family). The HTTP
+// adapter maps it to 400 with the detail; everything else stays 5xx and is
+// retried by the edge (AUD-007: the handler used to collapse every error to
+// 500, so oversized events looked like an outage forever).
+type ValidationError struct{ msg string }
+
+func (e *ValidationError) Error() string { return e.msg }
+
+func invalid(format string, args ...any) error {
+	return &ValidationError{msg: fmt.Sprintf(format, args...)}
+}
+
+// IsValidation reports whether err is a caller-fixable validation failure.
+func IsValidation(err error) bool {
+	var ve *ValidationError
+	return errors.As(err, &ve)
+}
+
 // Service wires the PushBatch use case.
 type Service struct {
 	pub Publisher
@@ -74,16 +102,19 @@ func (s *Service) PushBatch(ctx context.Context, batchID string, events []*event
 	start := time.Now()
 	defer func() { ObserveBatch(time.Since(start)) }()
 	if batchID == "" {
-		return "", fmt.Errorf("batch_id is required")
+		return "", invalid("batch_id is required")
 	}
 	if len(events) == 0 {
-		return "", fmt.Errorf("batch must contain at least one event")
+		return "", invalid("batch must contain at least one event")
+	}
+	if len(events) > MaxBatchEvents {
+		return "", invalid("batch has %d events, limit is %d", len(events), MaxBatchEvents)
 	}
 	traceID := traceid.FromContext(ctx)
 	msgs := make([]BatchMessage, 0, len(events))
 	for i, ev := range events {
 		if ev.GetTenantId() == "" || ev.GetSource() == nil || ev.GetSource().GetSourceId() == "" {
-			return "", fmt.Errorf("event %d: tenant_id and source.source_id are required", i)
+			return "", invalid("event %d: tenant_id and source.source_id are required", i)
 		}
 		// Deterministic transport identity: a retry of the same batch_id must
 		// enqueue with the same transport_id so the consumer's receipts layer
@@ -96,7 +127,11 @@ func (s *Service) PushBatch(ctx context.Context, batchID string, events []*event
 		}
 		value, err := protoMarshal(ev)
 		if err != nil {
-			return "", fmt.Errorf("event %d: marshal: %w", i, err)
+			return "", invalid("event %d: marshal: %v", i, err)
+		}
+		if len(value) > MaxEventBytes {
+			return "", invalid("event %d (transport_id=%s): %d bytes exceeds the %d-byte per-event limit",
+				i, ev.GetTransportId(), len(value), MaxEventBytes)
 		}
 		headers := [][2]string{
 			{hdrSchemaName, eventSchemaName},

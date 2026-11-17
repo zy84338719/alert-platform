@@ -21,9 +21,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
+	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/example/alert-platform/internal/adapter/translate"
 	"github.com/example/alert-platform/internal/application/edge"
-	eventv1 "github.com/example/alert-platform/gen/go/alert/event/v1"
 	"github.com/oekit/logx"
 	mw "github.com/oekit/middleware"
 	ekiterrors "github.com/oekit/pkg/errors"
@@ -153,6 +153,7 @@ func (g *Gateway) vendor(want eventv1.SourceType) func(ctx context.Context, c *a
 		// fsync-before-ack: Append Syncs before returning (EDGE-001).
 		if _, err := g.wal.Append(edge.Record{ID: batchID, Body: batch, SourceID: src.SourceID}); err != nil {
 			// Fail closed AND raise the edge's own alert (disk waterline).
+			edge.RecordWALRejected()
 			logx.CtxError(ctx, "EDGE SELF-ALERT: WAL append failed — refusing to ack vendor data",
 				logx.ErrKey, err, "source", src.SourceID, "batch", batchID)
 			mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50309, http.StatusServiceUnavailable,

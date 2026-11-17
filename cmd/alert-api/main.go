@@ -46,6 +46,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// AUD-016: per-identity ingest rate limiting (authenticated tenant/source
+	// or edge; IP fallback for unauthenticated noise).
+	if cfg.IngestRatePerSec > 0 {
+		httpv1.SetIngestLimiter(httpv1.NewIngestLimiter(float64(cfg.IngestRatePerSec), float64(cfg.IngestBurst)))
+	}
+	defer httpv1.SetIngestLimiter(nil)
+
 	// Durable producer: Publish returns only after acks=all (docs/04 §2).
 	producer := kafka.NewProducer(strings.Split(cfg.KafkaBrokers, ","), cfg.KafkaTopic)
 	defer func() { _ = producer.Close() }()

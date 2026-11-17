@@ -25,6 +25,10 @@ type Config struct {
 	// creation entirely (local/dev: trace_id still flows into logs, nothing
 	// dials out).
 	OTLPEndpoint string `yaml:"otlp_endpoint" env:"OTLP_ENDPOINT" default:""`
+	// OTLPInsecure disables TLS on the OTLP gRPC exporter. The default stays
+	// true for the local compose stack (plaintext collector); production MUST
+	// set OTLP_INSECURE=false (startup warns otherwise, AUD-016).
+	OTLPInsecure bool `yaml:"otlp_insecure" env:"OTLP_INSECURE" default:"true"`
 
 	// APIAddr is the alert-api listen address.
 	APIAddr string `yaml:"api_addr" env:"ALERT_API_ADDR" default:":8080"`
@@ -45,6 +49,12 @@ type Config struct {
 	KafkaDLQTopic string `yaml:"kafka_dlq_topic" env:"ALERT_KAFKA_DLQ_TOPIC" default:"alert.dlq.v1"`
 	// KafkaGroupID is the worker consumer group.
 	KafkaGroupID string `yaml:"kafka_group_id" env:"ALERT_KAFKA_GROUP" default:"alert-worker-dev"`
+
+	// IngestRatePerSec / IngestBurst bound one authenticated source or edge
+	// (AUD-016). 0 disables limiting; defaults are high enough for normal
+	// vendor bursts while still bounding an unauthenticated/auth-storm load.
+	IngestRatePerSec int `yaml:"ingest_rate_per_sec" env:"ALERT_INGEST_RATE_PER_SEC" default:"500"`
+	IngestBurst      int `yaml:"ingest_burst" env:"ALERT_INGEST_BURST" default:"1000"`
 
 	// NotifyMode (REL-001): active|shadow|off — notification authority switch.
 	NotifyMode string `yaml:"notify_mode" env:"ALERT_NOTIFY_MODE" default:"active"`

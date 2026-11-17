@@ -65,7 +65,9 @@ func ListChannels(ctx context.Context, c *app.RequestContext) {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50306, 503, "policy service not wired"))
 		return
 	}
-	id, ok := requirePerm(ctx, c, authn.PermChannelsWrite)
+	// AUD-016: listing is a READ operation; the write permission here locked
+	// auditor/oncall out of the console's channel picker.
+	id, ok := requirePerm(ctx, c, authn.PermChannelsRead)
 	if !ok {
 		return
 	}

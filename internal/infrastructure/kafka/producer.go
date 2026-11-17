@@ -43,6 +43,10 @@ func NewProducer(brokers []string, topic string) *Producer {
 		RequiredAcks: kafka.RequireAll, // acks=all: durability before response
 		Async:        false,            // synchronous: Publish blocks until ack
 		BatchTimeout: 10 * time.Millisecond,
+		// Explicit 1MB producer batch bound. Ingest enforces a stricter
+		// 256KB per-event cap (AUD-007), so no single message can hit
+		// MessageTooLargeError and poison the rest of a batch.
+		BatchBytes: 1 << 20,
 	}
 	// kafka-go's Writer does NOT implement the idempotent producer (there is
 	// no enable.idempotence equivalent): a retry after a broker-side timeout

@@ -16,7 +16,9 @@ func rootMw() []app.HandlerFunc {
 func _ingestMw() []app.HandlerFunc {
 	// P0-03: internal ingest authenticates the edge credential and binds the
 	// server-authoritative tenant/source identity (see httpv1.IngestAuthMiddleware).
-	return []app.HandlerFunc{httpv1.IngestAuthMiddleware()}
+	// AUD-016: the limiter runs AFTER auth so buckets key on the authenticated
+	// tenant/source, not on attacker-controlled payload fields.
+	return []app.HandlerFunc{httpv1.IngestAuthMiddleware(), httpv1.IngestRateLimit()}
 }
 
 func _v1Mw() []app.HandlerFunc {

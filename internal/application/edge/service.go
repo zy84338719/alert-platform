@@ -237,6 +237,10 @@ func (u *Uploader) DrainOnce(ctx context.Context) (int, error) {
 			if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
 				return sent, fmt.Errorf("center returned %d for batch %s", resp.StatusCode, rec.ID)
 			}
+			// Permanent rejection: count it (alertable), keep it in the WAL
+			// for operator replay, and DO NOT block later records — the loop
+			// continues and Compact preserves the unacked prefix.
+			RecordPoisonBatch(resp.StatusCode)
 			logx.CtxError(ctx, "center rejected batch (kept pending for operator)",
 				"batch", rec.ID, "status", resp.StatusCode, "body", string(body[:n]))
 			continue

@@ -63,3 +63,27 @@ spec:
           expr: sum(rate(alert_platform_notify_attempt_total{result="retryable"}[10m])) > 1
           for: 10m
           labels: { severity: warning, team: sre }
+
+---
+# AUD-007/016: edge-side rejection counters (edge self-alerting).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alert-platform-edge
+  labels: { release: prometheus }
+spec:
+  groups:
+    - name: alert-platform.edge
+      rules:
+        - alert: AlertPlatformEdgeWALRejected
+          expr: increase(alert_platform_edge_wal_rejected_total[5m]) > 0
+          for: 1m
+          labels: { severity: critical, team: sre }
+          annotations:
+            summary: "edge WAL rejected vendor data (disk full/io error)"
+        - alert: AlertPlatformEdgeUploadPoison
+          expr: increase(alert_platform_edge_upload_poison_total[15m]) > 0
+          for: 5m
+          labels: { severity: warning, team: sre }
+          annotations:
+            summary: "center permanently rejected an edge batch (poison at WAL head)"

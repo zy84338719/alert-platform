@@ -34,6 +34,7 @@ const (
 	PermSourcesWrite       = "sources:write"
 	PermPoliciesRead       = "policies:read"
 	PermPoliciesWrite      = "policies:write"
+	PermChannelsRead       = "channels:read"
 	PermChannelsWrite      = "channels:write"
 	PermNotificationsRead  = "notifications:read"
 	PermNotificationsWrite = "notifications:write" // failed-task replay (AUD-002)
@@ -45,15 +46,15 @@ const (
 var Matrix = map[string]map[string]bool{
 	RolePlatformAdmin: allPerms(),
 	RoleMaintainer: set(PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
-		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead, PermNotificationsWrite),
-	RoleSRE:     set(PermAlertsRead, PermAlertsAck, PermPoliciesRead, PermPoliciesWrite, PermNotificationsRead, PermNotificationsWrite, PermAuditRead),
-	RoleOncall:  set(PermAlertsRead, PermAlertsAck, PermNotificationsRead),
-	RoleAuditor: set(PermAlertsRead, PermAuditRead),
+		PermPoliciesRead, PermPoliciesWrite, PermChannelsRead, PermChannelsWrite, PermNotificationsRead, PermNotificationsWrite),
+	RoleSRE:     set(PermAlertsRead, PermAlertsAck, PermPoliciesRead, PermPoliciesWrite, PermChannelsRead, PermNotificationsRead, PermNotificationsWrite, PermAuditRead),
+	RoleOncall:  set(PermAlertsRead, PermAlertsAck, PermChannelsRead, PermNotificationsRead),
+	RoleAuditor: set(PermAlertsRead, PermChannelsRead, PermAuditRead),
 }
 
 func allPerms() map[string]bool {
 	return set(PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
-		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead,
+		PermPoliciesRead, PermPoliciesWrite, PermChannelsRead, PermChannelsWrite, PermNotificationsRead,
 		PermNotificationsWrite, PermAuditRead)
 }
 

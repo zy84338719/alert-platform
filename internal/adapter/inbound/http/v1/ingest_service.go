@@ -64,7 +64,15 @@ func PushBatch(ctx context.Context, c *app.RequestContext) {
 
 	batchID, err := Ingest.PushBatch(ctx, req.GetBatchId(), req.GetEvents())
 	if err != nil {
-		ingest.RecordRejected("service") // validation 400 / broker 5xx
+		if ingest.IsValidation(err) {
+			// AUD-007: caller-fixable (batch shape / per-event size) -> 400
+			// with detail so the edge dead-letters instead of retrying a
+			// poison batch forever as if it were an outage.
+			ingest.RecordRejected("validation")
+			mw.Fail(ctx, c, ekiterrors.NewBadRequestError(err.Error()))
+			return
+		}
+		ingest.RecordRejected("service") // broker 5xx: retryable
 		mw.Fail(ctx, c, err)
 		return
 	}

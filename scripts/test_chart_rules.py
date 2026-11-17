@@ -23,6 +23,8 @@ ALERTS = [
     "AlertPlatformNotifyBacklog",
     "AlertPlatformNotifyDeadLettered",
     "AlertPlatformNotifyRetryStorm",
+    "AlertPlatformEdgeWALRejected",
+    "AlertPlatformEdgeUploadPoison",
 ]
 
 
