@@ -116,7 +116,19 @@ func (b *BaseStore) SyncNotifyAuthority(_ context.Context, desiredMode string) (
 	return Authority{Mode: b.authMode, Generation: b.authGen}, nil
 }
 
+func (b *BaseStore) GetNotifyAuthority(context.Context) (Authority, error) {
+	return Authority{Mode: b.authMode, Generation: b.authGen}, nil
+}
+
+func (b *BaseStore) ReleaseNotifyClaim(context.Context, string, string) error { return nil }
+
 func (b *BaseStore) ClaimNotifyTasks(_ context.Context, limit int, _ time.Duration) ([]Task, error) {
+	// P10-005: execution fencing — claiming requires the CURRENT authority to
+	// be active (the DB row, modeled by authMode), not just active-created
+	// tasks. A stale worker that has not re-synced still gets nothing.
+	if b.authMode != "" && b.authMode != ModeActive {
+		return nil, nil
+	}
 	// Model the real store's created-mode scoping (R27): deliverable tasks are
 	// exactly the ones created while authority was ACTIVE; shadow-era
 	// observations and pre-ledger rows (empty mode) are never claimed.
@@ -505,5 +517,68 @@ func TestOrphanSweepDeadLettersDisabledChannelTasks(t *testing.T) {
 		if task.ID == "orphan" {
 			t.Fatal("orphan task still queued after sweep")
 		}
+	}
+}
+
+// P10-005: a worker with a cached ACTIVE mode must stop claiming once another
+// replica persists shadow — even before its next periodic re-sync, because the
+// claim itself is fenced by the DB (modeled by BaseStore).
+func TestStaleWorkerStopsClaimingAfterAuthoritySwitch(t *testing.T) {
+	st := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(st, sender)
+	if err := svc.InitAuthority(context.Background()); err != nil { // active, gen 1
+		t.Fatal(err)
+	}
+	st.tasks = []Task{{ID: "a1", Attempts: 1, Payload: []byte(`{}`), CreatedMode: ModeActive}}
+	// Another replica switches the DB to shadow.
+	st.authMode = ModeShadow
+	st.authGen = 2
+
+	svc.DeliverOnce(context.Background())
+	if sender.count() != 0 {
+		t.Fatalf("stale active worker sent %d notifications after shadow switch", sender.count())
+	}
+	// Periodic re-sync adopts the DB state instead of writing the stale mode.
+	svc.authoritySyncedAt = time.Now().Add(-time.Minute)
+	svc.DeliverOnce(context.Background())
+	if svc.mode != ModeShadow || svc.generation != 2 {
+		t.Fatalf("cached authority = (%s,%d), want (shadow,2)", svc.mode, svc.generation)
+	}
+}
+
+type fencedRenewStore struct {
+	*modeStore
+	released int
+}
+
+func (f *fencedRenewStore) RenewNotifyLease(context.Context, string, string, time.Duration) error {
+	return ErrAuthorityFenced
+}
+func (f *fencedRenewStore) ReleaseNotifyClaim(context.Context, string, string) error {
+	f.released++
+	return nil
+}
+
+// P10-005: a send whose lease straddles an active→shadow switch must be
+// aborted and the claim returned to pending (REL-002 phase 4 later delivers).
+func TestRenewFencedReleasesClaimWithoutSending(t *testing.T) {
+	ms := &modeStore{}
+	st := &fencedRenewStore{modeStore: ms}
+	sender := &captureSender{}
+	svc := NewService(st, sender)
+	if err := svc.InitAuthority(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ms.tasks = []Task{{ID: "f1", Attempts: 1, Payload: []byte(`{}`), CreatedMode: ModeActive}}
+	svc.DeliverOnce(context.Background())
+	if sender.count() != 0 {
+		t.Fatal("fenced send still left the process")
+	}
+	if st.released != 1 {
+		t.Fatalf("fenced claim released %d times, want 1", st.released)
+	}
+	if len(ms.finished) != 0 {
+		t.Fatalf("fenced claim recorded a delivery attempt: %+v", ms.finished)
 	}
 }

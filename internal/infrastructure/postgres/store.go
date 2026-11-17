@@ -1029,6 +1029,11 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 			        AND (o.lease_until IS NULL OR o.lease_until < now()))
 			    OR (o.status = 'sending' AND o.lease_until < now()))
 			  AND o.created_mode = 'active'
+			  -- P10-005 execution fencing: claim eligibility is decided by the
+			  -- CURRENT DB authority, never by the worker's cached mode. A
+			  -- stale active worker stops claiming the moment another replica
+			  -- (rolling upgrade) persists shadow/off.
+			  AND EXISTS (SELECT 1 FROM notification_authority a WHERE a.id=1 AND a.mode='active')
 			ORDER BY o.next_attempt_at
 			LIMIT $1
 			FOR UPDATE OF o SKIP LOCKED
@@ -1063,7 +1068,9 @@ func (s *Store) ClaimNotifyTasks(ctx context.Context, limit int, lease time.Dura
 
 // RenewNotifyLease extends the current owner's lease right before a send
 // (P8-P1-04). Conditional on the lease token: a task re-claimed by another
-// worker returns ErrStaleNotifyLease and the caller must skip the send.
+// worker returns ErrStaleNotifyLease. P10-005: renewal ALSO requires the DB
+// authority to still be active — a claim that straddles an active→shadow
+// switch returns ErrAuthorityFenced and must not send.
 func (s *Store) RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error {
 	var token any
 	if leaseToken != "" {
@@ -1076,15 +1083,50 @@ func (s *Store) RenewNotifyLease(ctx context.Context, id, leaseToken string, lea
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE notification_outbox
 		SET lease_until = now() + ($3::bigint * interval '1 second'), updated_at = now()
-		WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid) AND status='sending'`,
+		WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid) AND status='sending'
+		  AND EXISTS (SELECT 1 FROM notification_authority a WHERE a.id=1 AND a.mode='active')`,
 		id, token, int64(lease.Seconds()))
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 && leaseToken != "" {
+		// Distinguish "another worker re-claimed the task" from "the era was
+		// fenced": both forbid the send, but the caller handles them
+		// differently (the latter releases the claim back to pending).
+		var mode string
+		if qerr := s.pool.QueryRow(ctx,
+			`SELECT mode FROM notification_authority WHERE id=1`).Scan(&mode); qerr == nil && mode != notify.ModeActive {
+			return notify.ErrAuthorityFenced
+		}
 		return notify.ErrStaleNotifyLease
 	}
 	return nil
+}
+
+// ReleaseNotifyClaim returns a fenced claim to pending without recording a
+// failure attempt (P10-005). Conditional on the lease token so a late caller
+// cannot clobber a newer owner.
+func (s *Store) ReleaseNotifyClaim(ctx context.Context, id, leaseToken string) error {
+	u, err := uuid.Parse(leaseToken)
+	if err != nil {
+		return fmt.Errorf("release claim: invalid lease token %q: %w", leaseToken, err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET status='pending', lease_owner=NULL, lease_until=NULL, lease_token=NULL,
+		    next_attempt_at=now(), updated_at=now()
+		WHERE id=$1 AND status='sending' AND lease_token=$2::uuid`, id, u)
+	return err
+}
+
+// GetNotifyAuthority reads the current persisted authority (P10-005 periodic
+// re-sync; the claim/renew SQL uses the same row directly).
+func (s *Store) GetNotifyAuthority(ctx context.Context) (notify.Authority, error) {
+	var a notify.Authority
+	err := s.pool.QueryRow(ctx, `
+		SELECT mode, generation, effective_at FROM notification_authority WHERE id=1`).
+		Scan(&a.Mode, &a.Generation, &a.EffectiveAt)
+	return a, err
 }
 
 // FinishNotifyTask records the delivery outcome; retryAfter>0 schedules the

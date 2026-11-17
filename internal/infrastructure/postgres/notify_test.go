@@ -883,3 +883,53 @@ func TestShadowTrailAndIdempotentRecord(t *testing.T) {
 		t.Fatalf("duplicate record = %v err=%v (unique index must dedup)", second, err)
 	}
 }
+
+// P10-005: execution fencing is decided by the DB authority, not the worker's
+// cached mode. A claim that straddles active→shadow is rejected at renewal,
+// released back to pending, and delivered once after authority returns.
+func TestNotifyAuthorityFencing(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	seedChannel(t, pool, "abab0000-0000-0000-0000-0000000000f1")
+	activeAuthority(t, store)
+	if _, err := store.ApplyEvent(ctx, notifyEvent("fence-1", eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("claim: %v (%d)", err, len(tasks))
+	}
+	// Another replica persists shadow while this claim is live.
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeShadow); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenewNotifyLease(ctx, tasks[0].ID, tasks[0].LeaseToken, time.Minute); err != notify.ErrAuthorityFenced {
+		t.Fatalf("renew under shadow = %v, want ErrAuthorityFenced", err)
+	}
+	if more, err := store.ClaimNotifyTasks(ctx, 10, time.Minute); err != nil || len(more) != 0 {
+		t.Fatalf("claim under shadow = %d (%v), want 0", len(more), err)
+	}
+	// Release the fenced claim without a delivery attempt.
+	if err := store.ReleaseNotifyClaim(ctx, tasks[0].ID, tasks[0].LeaseToken); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, tasks[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" {
+		t.Fatalf("released claim status = %q, want pending", status)
+	}
+	if n, _ := store.CountPendingNotifyTasks(ctx); n != 1 {
+		t.Fatalf("pending after release = %d, want 1", n)
+	}
+	// Authority returns: the active-era task is delivered exactly once.
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeActive); err != nil {
+		t.Fatal(err)
+	}
+	back, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+	if err != nil || len(back) != 1 || back[0].ID != tasks[0].ID {
+		t.Fatalf("claim after authority return: %v (%d)", err, len(back))
+	}
+}

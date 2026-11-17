@@ -39,6 +39,10 @@ type Task struct {
 // ErrStaleNotifyLease marks a finish attempt from a worker that no longer
 // owns the lease (expired + re-claimed elsewhere): the attempt is audited,
 // the current owner's state is untouched.
+// ErrAuthorityFenced means the DB authority is no longer active: a stale
+// worker must stop claiming/sending even though its cached mode says active.
+var ErrAuthorityFenced = errors.New("notification authority fenced")
+
 var ErrStaleNotifyLease = errors.New("notify: stale lease — task was re-claimed; result audited only")
 
 // Authority is the persisted notification-ownership state (P8-P0-01).
@@ -71,8 +75,16 @@ type Store interface {
 	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string, maxAttempts int) error
 	// RenewNotifyLease extends the current owner's lease before a send
 	// (P8-P1-04); ErrStaleNotifyLease when the task was re-claimed by another
-	// worker — the caller must NOT send (would duplicate a page).
+	// worker, ErrAuthorityFenced when the DB authority is no longer active —
+	// the caller must NOT send in either case (duplicate page / stale era).
 	RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error
+	// ReleaseNotifyClaim returns a fenced claim to pending without counting a
+	// delivery failure (P10-005): if authority returns to active the task is
+	// re-claimed exactly once (REL-002 phase 4).
+	ReleaseNotifyClaim(ctx context.Context, id, leaseToken string) error
+	// GetNotifyAuthority reads the CURRENT DB authority (mode/generation) for
+	// periodic re-sync; execution fencing never trusts the cached copy.
+	GetNotifyAuthority(ctx context.Context) (Authority, error)
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
 	// PeekNotifyTasks lists pending/retry tasks WITHOUT claiming or mutating
 	// them (REL-001 shadow mode: the would-have-sent trail must not disturb the
@@ -127,6 +139,9 @@ type Service struct {
 	// authorityDirty marks that the desired mode changed and needs another
 	// SyncNotifyAuthority before the next claim.
 	authorityDirty bool
+	// authoritySyncedAt throttles the read-only re-sync (P10-005): a stale
+	// worker must notice an authority change made by another replica.
+	authoritySyncedAt time.Time
 
 	// P8-P1-04 delivery pacing: bounded parallelism keeps one batch well
 	// inside the lease window, the per-channel limiter protects vendor
@@ -183,6 +198,7 @@ func (s *Service) InitAuthority(ctx context.Context) error {
 	s.generation = a.Generation
 	s.mode = a.Mode
 	s.authorityDirty = false
+	s.authoritySyncedAt = time.Now()
 	authorityGeneration.Set(float64(a.Generation))
 	logx.CtxInfo(ctx, "notification authority", "component", "alert-worker",
 		"mode", s.mode, "generation", s.generation)
@@ -191,15 +207,37 @@ func (s *Service) InitAuthority(ctx context.Context) error {
 
 // ensureAuthority lazily syncs the authority before a claim (defensive: Run
 // and InitAuthority normally did it already; SetMode marks it dirty).
+const authorityResyncEvery = 15 * time.Second
+
 func (s *Service) ensureAuthority(ctx context.Context) bool {
-	if !s.authorityDirty && s.generation > 0 {
+	if s.authorityDirty || s.generation == 0 {
+		if err := s.InitAuthority(ctx); err != nil {
+			if ctx.Err() == nil {
+				logx.CtxError(ctx, "notification authority sync failed", logx.ErrKey, err)
+			}
+			return false
+		}
 		return true
 	}
-	if err := s.InitAuthority(ctx); err != nil {
-		if ctx.Err() == nil {
-			logx.CtxError(ctx, "notification authority sync failed", logx.ErrKey, err)
+	// Periodic READ-ONLY re-sync: another replica (rolling upgrade) may have
+	// switched the DB authority. Adopt the DB value; never write back the
+	// stale process-local mode (that would re-open the era on every tick).
+	if time.Since(s.authoritySyncedAt) >= authorityResyncEvery {
+		a, err := s.store.GetNotifyAuthority(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				logx.CtxError(ctx, "notification authority re-sync failed", logx.ErrKey, err)
+			}
+			return false
 		}
-		return false
+		if a.Generation != s.generation || a.Mode != s.mode {
+			logx.CtxWarn(ctx, "notification authority changed; adopting DB state",
+				"component", "alert-worker", "mode", a.Mode, "generation", a.Generation)
+			s.mode = a.Mode
+			s.generation = a.Generation
+			authorityGeneration.Set(float64(a.Generation))
+		}
+		s.authoritySyncedAt = time.Now()
 	}
 	return true
 }
@@ -341,6 +379,18 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 	// duplicate. A DB error also defers: the task stays leased and retries
 	// after expiry rather than risking an unowned send.
 	if err := s.store.RenewNotifyLease(ctx, t.ID, t.LeaseToken, s.lease); err != nil {
+		if errors.Is(err, ErrAuthorityFenced) {
+			// P10-005: the DB authority flipped (active→shadow/off) while this
+			// task was claimed. Do NOT send; return the claim to pending so a
+			// later active era can deliver it once.
+			leaseRenewFailures.WithLabelValues("authority").Inc()
+			if rerr := s.store.ReleaseNotifyClaim(ctx, t.ID, t.LeaseToken); rerr != nil && ctx.Err() == nil {
+				logx.CtxError(ctx, "release fenced notification claim failed", logx.ErrKey, rerr, "task", t.ID)
+			}
+			logx.CtxWarn(ctx, "notification authority fenced before send; claim released",
+				"component", "alert-worker", "task", t.ID)
+			return
+		}
 		if errors.Is(err, ErrStaleNotifyLease) {
 			leaseRenewFailures.WithLabelValues("stale").Inc()
 			logx.CtxWarn(ctx, "notification lease lost before send; skipping duplicate",
