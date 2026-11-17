@@ -1028,3 +1028,21 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   修复后 **SMOKE PASS**。
 - **replay_v02.sh**：当前代码复跑 **PASS**（T-005/T-006/T-007）。
 - 证据补充：`docs/evidence/P9-cluster-verification-2026-11-16.md` 末尾新增 REVISION 8 段。
+
+---
+
+## 2026-11-17 · R29：GitHub 25 issue 修复批次（P10 + AUD 001–016）
+
+- **归档/查询正确性**：0014 transition_archive_queue（事务内入队、迟到/补传不漏）+ component_leases 单写者；
+  CH ReplacingMergeTree(FINAL)+`wait_end_of_query`+200 body 异常检测+4xx permanent；历史查询按 `now-pgWindow`
+  边界合并 PG/CH、去重/截断/`next_from`/coverage；reconcile event_id 唯一化；receipt `last_seen_at` 刷新。
+- **通知/生命周期**：终态出口（max attempts/ssrf/僵尸渠道死信/replay API/告警）；shadow peek 覆盖全部 pending；
+  outbox 死信+单写者+同 key 排序+at-least-once 注释纠偏；authority DB fencing（claim/renew 校验 DB mode，
+  跨切换 claim 释放回 pending）；PG 池/statement-lock timeout/readiness；escalation 单飞+stage 唯一。
+- **安全/API**：heartbeat 身份绑定（edge 凭证/租户 source 注册校验）；ingest 256KiB 单事件预检→400、
+  8MiB body 上限、令牌桶限流、毒批计数；安全响应头；OTLP_INSECURE/PGDSN 告警；channels:read 拆分；
+  metrics 平台/租户分级 + 服务端 tenant matcher + `metrics:platform`；`/metrics/v1`、`/history/v1` 入 IDL。
+- **生命周期/运行角色**：PG/CH 逐日对账，only-after-verified 才删 PG transition；WORKER_PROFILE
+  all|processor|notifier|maintenance + retention/telemetry 单实例租约；chart `worker.profile`。
+- **验证**：`go test ./...` 全绿（PG 517s / Kafka 292s 容器套件）；关键包 `-race` 全绿；
+  `check_deps.py`、IDL lint/build/drift、chart rules(9)/policies 矩阵 PASS；gofmt 仅历史遗留 EOF 差异。

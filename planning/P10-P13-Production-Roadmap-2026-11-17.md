@@ -26,6 +26,10 @@
 
 ## 二、P10：数据一致性与发布阻断修复（W26–W27，17 人日）
 
+> **2026-11-17 完成**：P10-001..008 全部落地（见 `planning/DEVELOPMENT_LOG.md` R29 / `planning/backlog.csv` DONE）。
+> 对应实现：0014 归档队列+租约、ReplacingMergeTree+FINIAL、冷热合并分页、lifecycle 对账清理、
+> claim/renew DB fencing、指标分级+tenant matcher、proto metrics/history + hz 路由、WORKER_PROFILE+singleton 租约。
+
 | 任务 | 开发内容 | 验收标准 | 依赖 | 人日 | Owner |
 |---|---|---|---|---|---|
 | **P10-001 归档游标重构** | `transition_at` 事件时间游标改为提交序来源：首选复用 domain outbox，新增 `TransitionArchiveRequested` 事件由独立 Archive Consumer 按 `transition_id` 幂等消费；若采用提交序扫描，必须处理并发事务晚提交的游标跳跃（提交序来源 + 可重扫窗口 + 唯一去重）。迁移自 0014 起（0013 已被 R27 占用） | 迟到事件、乱序事件、Edge 补传均不漏归档（drill 扩展迟到/补传用例） | — | 3 | Backend-Core |
