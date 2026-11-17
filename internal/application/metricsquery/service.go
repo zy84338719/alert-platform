@@ -9,7 +9,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+)
+
+// Metric tiers (P10-006). Platform-tier metrics aggregate the whole
+// installation; exposing them to a tenant user leaks cross-tenant volume,
+// error rates and source inventory. Tenant-tier metrics carry a `tenant`
+// label and are ALWAYS filtered server-side with the caller's tenant.
+const (
+	TierPlatform = "platform"
+	TierTenant   = "tenant"
 )
 
 // Metric is one catalog entry.
@@ -17,6 +27,7 @@ type Metric struct {
 	Name        string `json:"name"`
 	Unit        string `json:"unit"`
 	Description string `json:"description"`
+	Tier        string `json:"tier"`
 	expr        string // server-side PromQL template, never exposed
 }
 
@@ -46,6 +57,9 @@ type Client interface {
 var (
 	ErrUnknownMetric = errors.New("unknown metric")
 	ErrInvalidRange  = errors.New("invalid time range")
+	// ErrForbidden: a platform-tier metric was requested without the
+	// platform-metrics permission.
+	ErrForbidden = errors.New("metric requires platform scope")
 )
 
 // Limits keep one query cheap for Prometheus and the console.
@@ -80,11 +94,11 @@ var catalog = []Metric{
 	{Name: "notify_authority_generation", Unit: "generation", Description: "Persisted notification-authority generation.",
 		expr: `alert_platform_notify_authority_generation`},
 	{Name: "active_instances", Unit: "alerts", Description: "Alert instances pending/firing/stale.",
-		expr: `alert_platform_alert_active_instances`},
+		Tier: TierTenant, expr: `alert_platform_alert_active_instances`},
 	{Name: "open_incidents", Unit: "incidents", Description: "Incidents not yet closed.",
-		expr: `alert_platform_incident_open`},
+		Tier: TierTenant, expr: `alert_platform_incident_open`},
 	{Name: "source_heartbeat_age", Unit: "s", Description: "Seconds since each source last pushed.",
-		expr: `alert_platform_source_heartbeat_age_seconds`},
+		Tier: TierTenant, expr: `alert_platform_source_heartbeat_age_seconds`},
 	{Name: "edge_wal_bytes", Unit: "bytes", Description: "Edge WAL size.",
 		expr: `alert_platform_edge_wal_bytes`},
 	{Name: "edge_reconnect_rate", Unit: "reconnects/s", Description: "SSE reconnects per second.",
@@ -101,8 +115,11 @@ var catalog = []Metric{
 
 var byName = func() map[string]Metric {
 	m := make(map[string]Metric, len(catalog))
-	for _, e := range catalog {
-		m[e.Name] = e
+	for i := range catalog {
+		if catalog[i].Tier == "" {
+			catalog[i].Tier = TierPlatform
+		}
+		m[catalog[i].Name] = catalog[i]
 	}
 	return m
 }()
@@ -115,14 +132,46 @@ type Service struct {
 // NewService builds the service over the Prometheus client port.
 func NewService(client Client) *Service { return &Service{client: client} }
 
-// Catalog lists the whitelisted metrics (no expressions).
+// Catalog lists every whitelisted metric (platform-admin view, no expressions).
 func Catalog() []Metric { return append([]Metric(nil), catalog...) }
 
+// CatalogFor filters the catalog by caller scope: a tenant user sees ONLY
+// tenant-tier metrics. Platform admins see everything.
+func CatalogFor(platform bool) []Metric {
+	out := make([]Metric, 0, len(catalog))
+	for _, e := range catalog {
+		if platform || e.Tier == TierTenant {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// tenantMatcher appends a tenant label selector to a plain metric selector.
+// Tenant IDs come from the authenticated identity (UUID), and the value is
+// still escaped so no caller-controlled text can alter the PromQL.
+func tenantMatcher(expr, tenantID string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(tenantID)
+	return expr + `{tenant="` + escaped + `"}`
+}
+
 // Query resolves name against the catalog and validates the window.
-func (s *Service) Query(ctx context.Context, name string, start, end time.Time, step time.Duration) (Result, error) {
+// Tenant-tier metrics are filtered server-side with the caller's tenant;
+// platform-tier metrics require platform scope (P10-006).
+func (s *Service) Query(ctx context.Context, name, tenantID string, platform bool, start, end time.Time, step time.Duration) (Result, error) {
 	entry, ok := byName[name]
 	if !ok {
 		return Result{}, fmt.Errorf("%w: %q", ErrUnknownMetric, name)
+	}
+	if entry.Tier == TierPlatform && !platform {
+		return Result{}, fmt.Errorf("%w: %q", ErrForbidden, name)
+	}
+	expr := entry.expr
+	if entry.Tier == TierTenant && !platform {
+		if tenantID == "" {
+			return Result{}, fmt.Errorf("%w: tenant identity required", ErrForbidden)
+		}
+		expr = tenantMatcher(expr, tenantID)
 	}
 	if start.IsZero() || end.IsZero() || !end.After(start) {
 		return Result{}, fmt.Errorf("%w: end must be after start", ErrInvalidRange)
@@ -143,7 +192,7 @@ func (s *Service) Query(ctx context.Context, name string, start, end time.Time, 
 	if int(window/step) > maxPoints {
 		return Result{}, fmt.Errorf("%w: more than %d points", ErrInvalidRange, maxPoints)
 	}
-	series, err := s.client.QueryRange(ctx, entry.expr, start, end, step)
+	series, err := s.client.QueryRange(ctx, expr, start, end, step)
 	if err != nil {
 		return Result{}, err
 	}

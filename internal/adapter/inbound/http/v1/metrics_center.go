@@ -28,21 +28,25 @@ func SetMetricsQuery(svc *metricsquery.Service) { MetricsQuery = svc }
 //
 // @router /metrics/v1/catalog [GET]
 func MetricsCatalog(ctx context.Context, c *app.RequestContext) {
-	if _, ok := requirePerm(ctx, c, authn.PermAlertsRead); !ok {
+	id, ok := requirePerm(ctx, c, authn.PermAlertsRead)
+	if !ok {
 		return
 	}
 	if MetricsQuery == nil {
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50306, 503, "metrics backend not configured"))
 		return
 	}
-	c.JSON(200, map[string]any{"metrics": metricsquery.Catalog()})
+	// P10-006: tenant users see only tenant-tier entries; cross-tenant
+	// platform metrics require metrics:platform.
+	c.JSON(200, map[string]any{"metrics": metricsquery.CatalogFor(authn.Allowed(id.Role, authn.PermPlatformMetrics))})
 }
 
 // MetricsQueryRange proxies one whitelisted metric over a bounded window.
 //
 // @router /metrics/v1/query [GET]
 func MetricsQueryRange(ctx context.Context, c *app.RequestContext) {
-	if _, ok := requirePerm(ctx, c, authn.PermAlertsRead); !ok {
+	id, ok := requirePerm(ctx, c, authn.PermAlertsRead)
+	if !ok {
 		return
 	}
 	if MetricsQuery == nil {
@@ -65,8 +69,12 @@ func MetricsQueryRange(ctx context.Context, c *app.RequestContext) {
 		mw.Fail(ctx, c, ekiterrors.NewBadRequestError("invalid step: "+err.Error()))
 		return
 	}
-	res, err := MetricsQuery.Query(ctx, name, start, end, step)
+	res, err := MetricsQuery.Query(ctx, name, id.TenantID,
+		authn.Allowed(id.Role, authn.PermPlatformMetrics), start, end, step)
 	switch {
+	case errors.Is(err, metricsquery.ErrForbidden):
+		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40305, 403, err.Error()))
+		return
 	case errors.Is(err, metricsquery.ErrUnknownMetric):
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(40402, 404, err.Error()))
 		return

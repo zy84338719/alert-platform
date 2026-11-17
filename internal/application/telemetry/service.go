@@ -17,31 +17,40 @@ import (
 // SourceHeartbeat is one registered source's liveness input.
 type SourceHeartbeat struct {
 	SourceID   string
+	TenantID   string
 	Name       string
 	LastSeenAt time.Time // zero = never seen
 	Enabled    bool
 }
 
+// TenantCount is one tenant's gauge value. Business gauges are emitted per
+// tenant so the metrics center can inject a tenant matcher server-side
+// (P10-006); the tenant count is bounded by the SaaS tenant budget.
+type TenantCount struct {
+	TenantID string
+	Count    int64
+}
+
 // Store is the read port (infrastructure/postgres).
 type Store interface {
-	CountActiveAlerts(ctx context.Context) (int64, error)
-	CountOpenIncidents(ctx context.Context) (int64, error)
+	CountActiveAlertsByTenant(ctx context.Context) ([]TenantCount, error)
+	CountOpenIncidentsByTenant(ctx context.Context) ([]TenantCount, error)
 	ListSourceHeartbeats(ctx context.Context) ([]SourceHeartbeat, error)
 }
 
 var (
-	activeAlerts = prometheus.NewGauge(prometheus.GaugeOpts{
+	activeAlerts = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "alert_platform", Subsystem: "alert", Name: "active_instances",
-		Help: "Alert instances in pending/firing/stale state.",
-	})
-	openIncidents = prometheus.NewGauge(prometheus.GaugeOpts{
+		Help: "Alert instances in pending/firing/stale state, per tenant.",
+	}, []string{"tenant"})
+	openIncidents = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "alert_platform", Subsystem: "incident", Name: "open",
-		Help: "Incidents not yet closed.",
-	})
+		Help: "Incidents not yet closed, per tenant.",
+	}, []string{"tenant"})
 	sourceHeartbeatAge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "alert_platform", Subsystem: "source", Name: "heartbeat_age_seconds",
-		Help: "Seconds since the source last pushed (enabled sources only).",
-	}, []string{"source"})
+		Help: "Seconds since the source last pushed (enabled sources only, per tenant).",
+	}, []string{"tenant", "source"})
 )
 
 // registerOnce keeps the gauges out of binaries that only import the types
@@ -105,17 +114,24 @@ func (s *Service) SampleOnce(ctx context.Context) error {
 
 func (s *Service) sample(ctx context.Context) error {
 	var firstErr error
-	if n, err := s.store.CountActiveAlerts(ctx); err != nil {
+	// Reset first: deleted tenants must not leave stale series.
+	activeAlerts.Reset()
+	if counts, err := s.store.CountActiveAlertsByTenant(ctx); err != nil {
 		firstErr = err
 		logx.CtxError(ctx, "telemetry: active alerts count failed", logx.ErrKey, err)
 	} else {
-		activeAlerts.Set(float64(n))
+		for _, c := range counts {
+			activeAlerts.WithLabelValues(c.TenantID).Set(float64(c.Count))
+		}
 	}
-	if n, err := s.store.CountOpenIncidents(ctx); err != nil {
+	openIncidents.Reset()
+	if counts, err := s.store.CountOpenIncidentsByTenant(ctx); err != nil {
 		firstErr = err
 		logx.CtxError(ctx, "telemetry: open incidents count failed", logx.ErrKey, err)
 	} else {
-		openIncidents.Set(float64(n))
+		for _, c := range counts {
+			openIncidents.WithLabelValues(c.TenantID).Set(float64(c.Count))
+		}
 	}
 	sources, err := s.store.ListSourceHeartbeats(ctx)
 	if err != nil {
@@ -138,7 +154,11 @@ func (s *Service) sample(ctx context.Context) error {
 		if label == "" {
 			label = src.SourceID
 		}
-		sourceHeartbeatAge.WithLabelValues(label).Set(age)
+		tenant := src.TenantID
+		if tenant == "" {
+			tenant = "unknown"
+		}
+		sourceHeartbeatAge.WithLabelValues(tenant, label).Set(age)
 	}
 	return firstErr
 }

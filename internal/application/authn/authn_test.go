@@ -7,11 +7,11 @@ func TestRBACMatrix(t *testing.T) {
 	allPerms := []string{
 		PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
 		PermPoliciesRead, PermPoliciesWrite, PermChannelsRead, PermChannelsWrite, PermNotificationsRead,
-		PermNotificationsWrite, PermAuditRead,
+		PermNotificationsWrite, PermAuditRead, PermPlatformMetrics,
 	}
 	expect := map[string]map[string]bool{
 		RolePlatformAdmin: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: true, PermSourcesWrite: true,
-			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsRead: true, PermChannelsWrite: true, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: true},
+			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsRead: true, PermChannelsWrite: true, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: true, PermPlatformMetrics: true},
 		RoleMaintainer: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: true, PermSourcesWrite: true,
 			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsRead: true, PermChannelsWrite: true, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: false},
 		RoleSRE: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,

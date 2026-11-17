@@ -39,6 +39,9 @@ const (
 	PermNotificationsRead  = "notifications:read"
 	PermNotificationsWrite = "notifications:write" // failed-task replay (AUD-002)
 	PermAuditRead          = "audit:read"
+	// PermPlatformMetrics gates the platform-tier metrics center (P10-006):
+	// cross-tenant throughput/error rates are operator data.
+	PermPlatformMetrics = "metrics:platform"
 )
 
 // Matrix is the authoritative role -> permission set (AUTH-002 acceptance
@@ -55,7 +58,7 @@ var Matrix = map[string]map[string]bool{
 func allPerms() map[string]bool {
 	return set(PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
 		PermPoliciesRead, PermPoliciesWrite, PermChannelsRead, PermChannelsWrite, PermNotificationsRead,
-		PermNotificationsWrite, PermAuditRead)
+		PermNotificationsWrite, PermAuditRead, PermPlatformMetrics)
 }
 
 func set(ps ...string) map[string]bool {
