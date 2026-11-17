@@ -609,55 +609,70 @@ func (s *Store) MarkStaleBySources(ctx context.Context, tenantID string, sourceI
 	return len(victims), nil
 }
 
-// ClaimOutboxRows returns up to limit unpublished, committed domain events,
-// marking them claimed (at-least-once: a crashed relay re-claims after the
-// visibility timeout lapses rows back to pending). Implements relay.Store.
-func (s *Store) ClaimOutboxRows(ctx context.Context, limit int, visibilityTimeout time.Duration) ([]relay.OutboxRow, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+// SweepOutbox resolves claims abandoned by a crashed or timed-out relay.
+// Rows under max attempts return to pending; rows at/over the limit enter the
+// terminal 'failed' state instead of retrying forever (AUD-011).
+func (s *Store) SweepOutbox(ctx context.Context, visibilityTimeout time.Duration, maxAttempts int) (int64, int64, error) {
+	var requeued, dead int64
+	err := s.pool.QueryRow(ctx, `
+		WITH stale AS (
+			SELECT id, attempts FROM domain_outbox
+			WHERE status='publishing' AND next_attempt_at < now() - $1::bigint * interval '1 second'
+		), failed AS (
+			UPDATE domain_outbox d SET status='failed'
+			FROM stale s WHERE d.id=s.id AND s.attempts >= $2
+			RETURNING d.id
+		), requeued AS (
+			UPDATE domain_outbox d SET status='pending'
+			FROM stale s WHERE d.id=s.id AND s.attempts < $2
+			RETURNING d.id
+		)
+		SELECT (SELECT count(*) FROM failed), (SELECT count(*) FROM requeued)`,
+		int64(visibilityTimeout.Seconds()), maxAttempts).Scan(&dead, &requeued)
+	return requeued, dead, err
+}
+
+// ClaimOutboxRows returns up to limit pending domain events in created_at
+// order, skipping rows that are not due yet and rows whose older same-key row
+// is still pending/publishing. The NOT EXISTS guard preserves per-aggregate
+// ordering: a newer lifecycle event can never overtake a failed/backing-off
+// one (AUD-011). Claiming bumps attempts.
+func (s *Store) ClaimOutboxRows(ctx context.Context, limit, maxAttempts int) ([]relay.OutboxRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		WITH claimed AS (
+			SELECT o.id FROM domain_outbox o
+			WHERE o.status='pending'
+			  AND o.attempts < $2
+			  AND o.next_attempt_at <= now()
+			  AND NOT EXISTS (
+				SELECT 1 FROM domain_outbox e
+				WHERE e.tenant_id = o.tenant_id
+				  AND e.aggregate_id = o.aggregate_id
+				  AND e.status IN ('pending','publishing')
+				  AND (e.created_at, e.id) < (o.created_at, o.id)
+			  )
+			ORDER BY o.created_at, o.id
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE domain_outbox d
+		SET status='publishing', attempts=d.attempts+1, next_attempt_at=now()
+		FROM claimed c WHERE d.id=c.id
+		RETURNING d.id::text, d.tenant_id::text, d.aggregate_id, d.event_type,
+		          d.event_payload, d.attempts`, limit, maxAttempts)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	// Re-queue rows whose claim (attempts bump) is older than the timeout.
-	if _, err := tx.Exec(ctx, `
-		UPDATE domain_outbox SET status='pending'
-		WHERE status='publishing' AND next_attempt_at < now() - $1::interval`,
-		fmt.Sprintf("%d seconds", int(visibilityTimeout.Seconds()))); err != nil {
-		return nil, err
-	}
-	rows, err := tx.Query(ctx, `
-		SELECT id::text, tenant_id, aggregate_id, event_type, event_payload FROM domain_outbox
-		WHERE status='pending'
-		ORDER BY created_at
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED`, limit)
-	if err != nil {
-		return nil, err
-	}
+	defer rows.Close()
 	var out []relay.OutboxRow
 	for rows.Next() {
 		var r relay.OutboxRow
-		if err := rows.Scan(&r.ID, &r.TenantID, &r.AggregateID, &r.EventType, &r.Payload); err != nil {
-			rows.Close()
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.AggregateID, &r.EventType, &r.Payload, &r.Attempts); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, r := range out {
-		if _, err := tx.Exec(ctx, `
-			UPDATE domain_outbox SET status='publishing', attempts=attempts+1, next_attempt_at=now()
-			WHERE id=$1`, r.ID); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // MarkOutboxPublished records successful publish (idempotent per row).
@@ -665,6 +680,32 @@ func (s *Store) MarkOutboxPublished(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE domain_outbox SET status='published', published_at=now() WHERE id=$1`, id)
 	return err
+}
+
+// RequeueOutboxRows returns claimed-but-unpublished rows to pending after a
+// publish failure. delay staggers the failed row's retry without unblocking
+// newer same-key rows (they remain ordered behind it).
+func (s *Store) RequeueOutboxRows(ctx context.Context, ids []string, delay time.Duration) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE domain_outbox
+		SET status='pending', next_attempt_at = now() + $2::bigint * interval '1 millisecond'
+		WHERE id = ANY($1::uuid[]) AND status='publishing'`,
+		ids, delay.Milliseconds())
+	return err
+}
+
+// OutboxStats reports the outbox depths (metrics / readiness).
+func (s *Store) OutboxStats(ctx context.Context) (int64, int64, int64, error) {
+	var pending, inflight, failed int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status='pending'),
+		       count(*) FILTER (WHERE status='publishing'),
+		       count(*) FILTER (WHERE status='failed')
+		FROM domain_outbox`).Scan(&pending, &inflight, &failed)
+	return pending, inflight, failed, err
 }
 
 // StaleSources implements health.Store: enabled sources silent past cutoff.
@@ -1393,17 +1434,17 @@ func (s *Store) AutoLink(ctx context.Context, tenantID, incidentID, instanceID s
 
 // --- INC-005 escalation ---
 
-// AcquireLease renews the escalation/correlation single-flight lease
-// (AUD-008): even with N worker replicas, only one runs the scan per tick.
-func (s *Store) AcquireLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+// acquireComponentLease renews (or takes over) a named single-writer lease.
+// False means another live owner holds it.
+func (s *Store) acquireComponentLease(ctx context.Context, name, owner string, ttl time.Duration) (bool, error) {
 	var got string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO component_leases (name, owner, expires_at)
-		VALUES ('escalation.correlate', $1, now() + $2::bigint * interval '1 second')
+		VALUES ($1, $2, now() + $3::bigint * interval '1 second')
 		ON CONFLICT (name) DO UPDATE
 		SET owner=EXCLUDED.owner, expires_at=EXCLUDED.expires_at, updated_at=now()
-		WHERE component_leases.owner = $1::uuid OR component_leases.expires_at < now()
-		RETURNING owner::text`, owner, int64(ttl.Seconds())).Scan(&got)
+		WHERE component_leases.owner = $2::uuid OR component_leases.expires_at < now()
+		RETURNING owner::text`, name, owner, int64(ttl.Seconds())).Scan(&got)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -1413,11 +1454,32 @@ func (s *Store) AcquireLease(ctx context.Context, owner string, ttl time.Duratio
 	return got == owner, nil
 }
 
+func (s *Store) releaseComponentLease(ctx context.Context, name, owner string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM component_leases WHERE name=$1 AND owner=$2::uuid`, name, owner)
+	return err
+}
+
+// AcquireLease renews the escalation/correlation single-flight lease
+// (AUD-008): even with N worker replicas, only one runs the scan per tick.
+func (s *Store) AcquireLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	return s.acquireComponentLease(ctx, "escalation.correlate", owner, ttl)
+}
+
 // ReleaseLease drops the escalation single-flight lease.
 func (s *Store) ReleaseLease(ctx context.Context, owner string) error {
-	_, err := s.pool.Exec(ctx,
-		`DELETE FROM component_leases WHERE name='escalation.correlate' AND owner=$1::uuid`, owner)
-	return err
+	return s.releaseComponentLease(ctx, "escalation.correlate", owner)
+}
+
+// AcquireOutboxLease renews the relay's single-writer lease (AUD-011): one
+// replica publishes at a time, so per-key created_at order is preserved.
+func (s *Store) AcquireOutboxLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	return s.acquireComponentLease(ctx, "outbox.relay", owner, ttl)
+}
+
+// ReleaseOutboxLease drops the relay lease.
+func (s *Store) ReleaseOutboxLease(ctx context.Context, owner string) error {
+	return s.releaseComponentLease(ctx, "outbox.relay", owner)
 }
 
 // EscalatableIncidents returns open incidents whose last escalation (or

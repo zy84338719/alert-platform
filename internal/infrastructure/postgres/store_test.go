@@ -335,11 +335,11 @@ func TestOutboxClaimPublishRequeue(t *testing.T) {
 	at := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
 	mustApply(t, store, ctx, canonical("tp-o1", at))
 
-	rows, err := store.ClaimOutboxRows(ctx, 10, time.Minute)
+	rows, err := store.ClaimOutboxRows(ctx, 10, 20)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("claim: %v (%d)", err, len(rows))
 	}
-	again, err := store.ClaimOutboxRows(ctx, 10, time.Minute)
+	again, err := store.ClaimOutboxRows(ctx, 10, 20)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("double claim leaked rows: %v (%d)", err, len(again))
 	}
@@ -360,18 +360,88 @@ func TestOutboxClaimPublishRequeue(t *testing.T) {
 		ev.Source.ExternalRuleId = "rule-2"
 		return ev
 	}())
-	claimed, err := store.ClaimOutboxRows(ctx, 10, time.Hour) // huge timeout
+	claimed, err := store.ClaimOutboxRows(ctx, 10, 20)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim2: %v (%d)", err, len(claimed))
 	}
-	// Backdate the claim past the timeout, then claim again with a short one.
+	// Backdate the claim past the timeout; the sweep requeues it (under max
+	// attempts) and the next claim picks it up.
 	if _, err := pool.Exec(ctx, `
 		UPDATE domain_outbox SET next_attempt_at = now() - interval '2 hours' WHERE id=$1`, claimed[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	requeued, err := store.ClaimOutboxRows(ctx, 10, time.Minute)
+	requeuedN, deadN, err := store.SweepOutbox(ctx, time.Minute, 20)
+	if err != nil || requeuedN != 1 || deadN != 0 {
+		t.Fatalf("sweep: %v requeued=%d dead=%d", err, requeuedN, deadN)
+	}
+	requeued, err := store.ClaimOutboxRows(ctx, 10, 20)
 	if err != nil || len(requeued) != 1 {
 		t.Fatalf("visibility requeue failed: %v (%d)", err, len(requeued))
+	}
+}
+
+// AUD-011: a row that exhausted its attempts becomes terminal instead of
+// retrying forever, and a newer row of the SAME aggregate may not overtake it
+// while it is still in flight.
+func TestOutboxDeadLetterAndPerKeyOrdering(t *testing.T) {
+	store, pool := newStoreTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 14, 11, 0, 0, 0, time.UTC)
+	key := "dddd0000-0000-0000-0000-000000000001"
+
+	// Two rows for one aggregate, created in order.
+	mustApply(t, store, ctx, canonical("tp-d1", at))
+	mustApply(t, store, ctx, func() *eventv1.AlertEvent {
+		ev := canonical("tp-d2", at.Add(time.Minute))
+		ev.Source.ExternalRuleId = "rule-2"
+		return ev
+	}())
+	if _, err := pool.Exec(ctx, `UPDATE domain_outbox SET aggregate_id=$1`, key); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.ClaimOutboxRows(ctx, 10, 20)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("claim: %v (%d)", err, len(rows))
+	}
+	// The claim is the older row; the newer same-key row stays blocked.
+	var oldest string
+	if err := pool.QueryRow(ctx, `
+		SELECT id::text FROM domain_outbox ORDER BY created_at, id LIMIT 1`).Scan(&oldest); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].ID != oldest {
+		t.Fatalf("claimed %s, want oldest %s", rows[0].ID, oldest)
+	}
+	if again, _ := store.ClaimOutboxRows(ctx, 10, 20); len(again) != 0 {
+		t.Fatalf("newer same-key row overtook an in-flight row: %d", len(again))
+	}
+
+	// Exhaust the older row: backdate + attempts=max -> terminal failed.
+	if _, err := pool.Exec(ctx, `
+		UPDATE domain_outbox SET attempts=$2, next_attempt_at=now()-interval '2 hours' WHERE id=$1`,
+		rows[0].ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	requeuedN, deadN, err := store.SweepOutbox(ctx, time.Minute, 3)
+	if err != nil || requeuedN != 0 || deadN != 1 {
+		t.Fatalf("sweep: %v requeued=%d dead=%d", err, requeuedN, deadN)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM domain_outbox WHERE id=$1`, rows[0].ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("exhausted row status = %q, want failed", status)
+	}
+	// Terminal rows no longer block the key: the newer row publishes next.
+	next, err := store.ClaimOutboxRows(ctx, 10, 3)
+	if err != nil || len(next) != 1 {
+		t.Fatalf("claim after dead-letter: %v (%d)", err, len(next))
+	}
+	pend, _, failed, err := store.OutboxStats(ctx)
+	if err != nil || pend != 0 || failed != 1 {
+		t.Fatalf("stats: %v pending=%d failed=%d", err, pend, failed)
 	}
 }
 

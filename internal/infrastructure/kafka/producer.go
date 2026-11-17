@@ -32,9 +32,8 @@ type Producer struct {
 	writer *kafka.Writer
 }
 
-// NewProducer builds a producer for one topic with acks=all, idempotent
-// delivery (kafka.Idempotent), and a hash balancer so same-key messages keep
-// ordering within a partition.
+// NewProducer builds a producer for one topic with acks=all, synchronous
+// writes, and a hash balancer so same-key messages land on one partition.
 func NewProducer(brokers []string, topic string) *Producer {
 	w := &kafka.Writer{
 		Addr:         kafka.TCP(brokers...),
@@ -44,8 +43,12 @@ func NewProducer(brokers []string, topic string) *Producer {
 		Async:        false,            // synchronous: Publish blocks until ack
 		BatchTimeout: 10 * time.Millisecond,
 	}
-	// kafka-go enables idempotent produce automatically when the broker
-	// supports it (enable.idempotence) with RequiredAcks=RequireAll.
+	// kafka-go's Writer does NOT implement the idempotent producer (there is
+	// no enable.idempotence equivalent): a retry after a broker-side timeout
+	// can duplicate a message. Callers must treat publish as AT-LEAST-ONCE and
+	// keep consumers idempotent (transition id / outbox_id headers). Hash
+	// balancing only preserves order per key within this writer's stream —
+	// the relay enforces a single writer + per-key ordering (AUD-011).
 	return &Producer{writer: w}
 }
 

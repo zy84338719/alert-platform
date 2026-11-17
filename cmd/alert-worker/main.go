@@ -73,8 +73,10 @@ func main() {
 		consumer := kafka.NewConsumer(brokers, cfg.KafkaTopic, cfg.KafkaGroupID, cfg.KafkaDLQTopic)
 		defer func() { _ = consumer.Close() }()
 
-		// relay: domain_outbox -> lifecycle topic.
-		relaySvc := relay.NewService(store, kafka.NewProducer(brokers, cfg.KafkaLifecycleTopic))
+		// relay: domain_outbox -> lifecycle topic. Single-writer lease keeps
+		// per-aggregate order across replicas; terminal rows dead-letter.
+		relaySvc := relay.NewService(store, kafka.NewProducer(brokers, cfg.KafkaLifecycleTopic), uuid.NewString())
+		relaySvc.SetTuning(0, 0, 0, cfg.OutboxMaxAttempts)
 
 		// scheduler: source-health stale reconciliation.
 		healthSvc := health.NewService(store)
@@ -124,6 +126,7 @@ func main() {
 		group.Go(worker.Task{Name: "relay", Critical: true, Run: relaySvc.Run})
 		group.Go(worker.Task{Name: "notifier", Critical: true, Run: notifySvc.Run})
 		escSvc := escalation.NewService(store, store)
+		escSvc.SetOwner(uuid.NewString()) // single-flight across replicas
 		group.Go(worker.Task{Name: "escalation", Critical: true, Run: escSvc.Run})
 		group.Go(worker.Task{Name: "health-scheduler", Critical: false, Run: healthSvc.Run})
 		group.Go(worker.Task{Name: "retention", Critical: false, Run: retentionSvc.Run})

@@ -81,6 +81,9 @@ type Config struct {
 	ArchiveBatch       int    `yaml:"archive_batch" env:"ALERT_ARCHIVE_BATCH" default:"500"`
 	ArchiveMaxBatches  int    `yaml:"archive_max_batches" env:"ALERT_ARCHIVE_MAX_BATCHES" default:"10"`
 	ArchiveMaxAttempts int    `yaml:"archive_max_attempts" env:"ALERT_ARCHIVE_MAX_ATTEMPTS" default:"10"`
+	// Outbox relay (AUD-011): rows reaching this many publish attempts are
+	// dead-lettered instead of retrying forever.
+	OutboxMaxAttempts int `yaml:"outbox_max_attempts" env:"ALERT_OUTBOX_MAX_ATTEMPTS" default:"20"`
 
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.
