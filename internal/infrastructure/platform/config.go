@@ -100,6 +100,12 @@ type Config struct {
 	// dead-lettered instead of retrying forever.
 	OutboxMaxAttempts int `yaml:"outbox_max_attempts" env:"ALERT_OUTBOX_MAX_ATTEMPTS" default:"20"`
 
+	// P10-004 PG cold-data lifecycle: transitions older than this are deleted
+	// ONLY after per-day ClickHouse reconciliation. Keep >= HISTORY_PG_WINDOW.
+	TransitionRetention string `yaml:"transition_retention" env:"ALERT_TRANSITION_RETENTION" default:"720h"`
+	// LifecycleInterval controls the reconciliation cadence (default daily).
+	LifecycleInterval string `yaml:"lifecycle_interval" env:"ALERT_LIFECYCLE_INTERVAL" default:"24h"`
+
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.
 	RetentionReceipts string `yaml:"retention_receipts" env:"ALERT_RETENTION_RECEIPTS" default:"168h"`

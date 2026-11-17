@@ -214,3 +214,51 @@ func snippet(b []byte) string {
 	}
 	return s
 }
+
+// chCount decodes ClickHouse JSON counts that may be quoted (the HTTP JSON
+// format quotes 64-bit integers by default).
+type chCount int64
+
+func (c *chCount) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	var n int64
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return err
+	}
+	*c = chCount(n)
+	return nil
+}
+
+// CountTransitionsByDay returns unique transition ids per UTC day in [from,to).
+// Used by the lifecycle reconciler: PG rows are deleted only when the archive
+// holds at least as many unique ids for that day (P10-004).
+func (c *Client) CountTransitionsByDay(ctx context.Context, from, to time.Time) (map[string]int64, error) {
+	q := `SELECT toString(toDate(transition_at, 'UTC')) AS day, uniqExact(transition_id) AS n
+	      FROM alert_transitions FINAL
+	      WHERE transition_at >= {from:DateTime64(3, 'UTC')}
+	        AND transition_at < {to:DateTime64(3, 'UTC')}
+	      GROUP BY day
+	      FORMAT JSON`
+	params := map[string]string{
+		"param_from": from.UTC().Format(chTimeLayout),
+		"param_to":   to.UTC().Format(chTimeLayout),
+	}
+	body, err := c.postBody(ctx, q, params)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Data []struct {
+			Day string  `json:"day"`
+			N   chCount `json:"n"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("clickhouse: decode day counts: %w", err)
+	}
+	out := make(map[string]int64, len(parsed.Data))
+	for _, r := range parsed.Data {
+		out[r.Day] = int64(r.N)
+	}
+	return out, nil
+}

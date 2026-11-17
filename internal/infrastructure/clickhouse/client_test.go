@@ -127,3 +127,33 @@ func TestClient4xxIsPermanent(t *testing.T) {
 		t.Fatalf("4xx error = %v, want PermanentError", err)
 	}
 }
+
+// P10-004: day counts for the PG/CH lifecycle reconciliation; ClickHouse may
+// quote 64-bit JSON integers.
+func TestCountTransitionsByDay(t *testing.T) {
+	var gotQuery map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = map[string]string{}
+		for k := range r.URL.Query() {
+			gotQuery[k] = r.URL.Query().Get(k)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"day":"2026-10-01","n":"12"},{"day":"2026-10-02","n":7}]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "default", "", "")
+	counts, err := c.CountTransitionsByDay(context.Background(),
+		time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["2026-10-01"] != 12 || counts["2026-10-02"] != 7 {
+		t.Fatalf("counts = %+v", counts)
+	}
+	if !strings.Contains(gotQuery["query"], "FINAL") || gotQuery["param_from"] == "" {
+		t.Fatalf("query/params not forwarded: %+v", gotQuery)
+	}
+	if gotQuery["wait_end_of_query"] != "1" {
+		t.Fatalf("wait_end_of_query missing: %+v", gotQuery)
+	}
+}

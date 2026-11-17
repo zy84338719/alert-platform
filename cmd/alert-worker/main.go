@@ -27,6 +27,7 @@ import (
 	"github.com/example/alert-platform/internal/application/archive"
 	"github.com/example/alert-platform/internal/application/escalation"
 	"github.com/example/alert-platform/internal/application/health"
+	"github.com/example/alert-platform/internal/application/lifecycle"
 	"github.com/example/alert-platform/internal/application/notify"
 	"github.com/example/alert-platform/internal/application/processor"
 	"github.com/example/alert-platform/internal/application/relay"
@@ -136,12 +137,20 @@ func main() {
 			group.Go(worker.Task{Name: "telemetry", Critical: false, Run: telemetrySvc.Run})
 
 			if cfg.ClickhouseURL != "" {
-				archiveSvc := archive.NewService(postgres.NewArchiveStore(pool), clickhouse.New(
-					cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword),
+				ch := clickhouse.New(cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword)
+				archiveSvc := archive.NewService(postgres.NewArchiveStore(pool), ch,
 					uuid.NewString()) // single-writer lease owner
 				archiveSvc.SetTuning(mustDurationOr(cfg.ArchiveInterval, 10*time.Second),
 					cfg.ArchiveBatch, cfg.ArchiveMaxBatches, cfg.ArchiveMaxAttempts)
 				group.Go(worker.Task{Name: "archive", Critical: false, Run: archiveSvc.Run})
+
+				// P10-004: daily PG<->CH reconciliation; PG rows are deleted
+				// only for days with a fully-done queue AND a matching archive
+				// count. No ClickHouse -> no deletion.
+				lifeSvc := lifecycle.NewService(store, ch,
+					mustDurationOr(cfg.TransitionRetention, 30*24*time.Hour))
+				lifeSvc.SetTuning(mustDurationOr(cfg.LifecycleInterval, 24*time.Hour))
+				group.Go(worker.Task{Name: "lifecycle", Critical: false, Run: lifeSvc.Run})
 			}
 		}
 		platform.RegisterRuntimeCheck("background-tasks", group.ReadinessCheck())
