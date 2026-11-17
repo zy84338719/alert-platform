@@ -88,16 +88,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 14 {
-		t.Fatalf("version after first Up = %d, want 14 (0001..0014: P10 archive queue + component leases)", v1)
+	if v1 != 15 {
+		t.Fatalf("version after first Up = %d, want 15 (0001..0015: AUD-002/012 shadow audit unique)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 14 {
-		t.Fatalf("version after second Up = %d, want 14", v2)
+	if v2 != 15 {
+		t.Fatalf("version after second Up = %d, want 15", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the
@@ -129,6 +129,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 		"0012_archive_cursor.up.sql",
 		"0013_outbox_created_mode.up.sql",
 		"0014_archive_queue.up.sql",
+		"0015_shadow_audit_unique.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

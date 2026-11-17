@@ -55,6 +55,22 @@ spec:
           annotations:
             summary: "notification backlog above 100"
             description: "Pending/retry tasks are accumulating in the current authority generation."
+        - alert: AlertPlatformNotifyDeadLettered
+          expr: increase(alert_platform_notify_failed_total[15m]) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "notifications were dead-lettered"
+            description: "A channel/task was permanently rejected or exhausted its retry budget; replay after fixing the channel (POST /notifications/v1/{id}/replay)."
+        - alert: AlertPlatformNotifyRetryStorm
+          expr: sum(rate(alert_platform_notify_attempt_total{result=\"retryable\"}[10m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "notification retry rate above 1/s"
+            description: "A channel is failing transiently and retrying; check vendor status and channel config."
         {{- with .Values.prometheusRule.extraRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

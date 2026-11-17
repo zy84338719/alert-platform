@@ -28,15 +28,16 @@ const (
 
 // Permissions guarded at handler level.
 const (
-	PermAlertsRead       = "alerts:read"
-	PermAlertsAck        = "alerts:ack"
-	PermSourcesRead      = "sources:read"
-	PermSourcesWrite     = "sources:write"
-	PermPoliciesRead     = "policies:read"
-	PermPoliciesWrite    = "policies:write"
-	PermChannelsWrite    = "channels:write"
-	PermNotificationsRead = "notifications:read"
-	PermAuditRead        = "audit:read"
+	PermAlertsRead         = "alerts:read"
+	PermAlertsAck          = "alerts:ack"
+	PermSourcesRead        = "sources:read"
+	PermSourcesWrite       = "sources:write"
+	PermPoliciesRead       = "policies:read"
+	PermPoliciesWrite      = "policies:write"
+	PermChannelsWrite      = "channels:write"
+	PermNotificationsRead  = "notifications:read"
+	PermNotificationsWrite = "notifications:write" // failed-task replay (AUD-002)
+	PermAuditRead          = "audit:read"
 )
 
 // Matrix is the authoritative role -> permission set (AUTH-002 acceptance
@@ -44,15 +45,16 @@ const (
 var Matrix = map[string]map[string]bool{
 	RolePlatformAdmin: allPerms(),
 	RoleMaintainer: set(PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
-		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead),
-	RoleSRE:    set(PermAlertsRead, PermAlertsAck, PermPoliciesRead, PermPoliciesWrite, PermNotificationsRead, PermAuditRead),
-	RoleOncall: set(PermAlertsRead, PermAlertsAck, PermNotificationsRead),
+		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead, PermNotificationsWrite),
+	RoleSRE:     set(PermAlertsRead, PermAlertsAck, PermPoliciesRead, PermPoliciesWrite, PermNotificationsRead, PermNotificationsWrite, PermAuditRead),
+	RoleOncall:  set(PermAlertsRead, PermAlertsAck, PermNotificationsRead),
 	RoleAuditor: set(PermAlertsRead, PermAuditRead),
 }
 
 func allPerms() map[string]bool {
 	return set(PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
-		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead, PermAuditRead)
+		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead,
+		PermNotificationsWrite, PermAuditRead)
 }
 
 func set(ps ...string) map[string]bool {

@@ -21,6 +21,8 @@ ALERTS = [
     "AlertPlatformDLQGrowing",
     "AlertPlatformNotifyFailures",
     "AlertPlatformNotifyBacklog",
+    "AlertPlatformNotifyDeadLettered",
+    "AlertPlatformNotifyRetryStorm",
 ]
 
 
@@ -88,7 +90,7 @@ def main():
         for f in failures:
             print("  -", f)
         sys.exit(1)
-    print("P9-OBS-07 CHART RULES MATRIX: PASS (5 rules, selector labels, extraRules, docs-consistent)")
+    print("P9-OBS-07 CHART RULES MATRIX: PASS (%d rules, selector labels, extraRules, docs-consistent)" % len(ALERTS))
 
 
 if __name__ == "__main__":

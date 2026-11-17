@@ -85,6 +85,7 @@ func main() {
 			sender: channel.NewHTTPSender(cfg.AllowPrivateChannels),
 		})
 		notifySvc.SetMode(cfg.NotifyMode) // REL-001: active|shadow|off
+		notifySvc.SetMaxAttempts(cfg.NotifyMaxAttempts)
 		// P8-P0-01: establish the persisted authority generation BEFORE any
 		// producer enqueues tasks — a fresh Pod must know which era owns
 		// delivery, or a shadow→active rollout would replay history.

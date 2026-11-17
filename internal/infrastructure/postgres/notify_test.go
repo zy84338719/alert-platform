@@ -119,7 +119,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 4) successful delivery records the attempt row and finalizes the task.
-	err = store.FinishNotifyTask(ctx, taskID, reclaimed[0].LeaseToken, true, 0, reclaimed[0].Attempts, 200, "", "")
+	err = store.FinishNotifyTask(ctx, taskID, reclaimed[0].LeaseToken, true, 0, reclaimed[0].Attempts, 200, "", "", 15)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 		SELECT id::text FROM notification_outbox WHERE id::text <> $1 LIMIT 1`, taskID).Scan(&task2); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishNotifyTask(ctx, task2, "", false, 42*time.Second, 1, 429, "retryable", "rate limited"); err != nil {
+	if err := store.FinishNotifyTask(ctx, task2, "", false, 42*time.Second, 1, 429, "retryable", "rate limited", 15); err != nil {
 		t.Fatal(err)
 	}
 	var st2 string
@@ -167,7 +167,7 @@ func TestNotifyOutboxPipeline(t *testing.T) {
 	}
 
 	// 6) permanent 4xx marks failed (no further retries).
-	if err := store.FinishNotifyTask(ctx, task2, "", false, 0, 2, 404, "permanent", "gone"); err != nil {
+	if err := store.FinishNotifyTask(ctx, task2, "", false, 0, 2, 404, "permanent", "gone", 15); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, task2).Scan(&st2); err != nil {
@@ -597,7 +597,7 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 	}
 
 	// Worker A 的迟到完成：不得改变状态，但必须留下审计行。
-	if err := store.FinishNotifyTask(ctx, tasksA[0].ID, tokenA, true, 0, tasksA[0].Attempts, 200, "", ""); err != notify.ErrStaleNotifyLease {
+	if err := store.FinishNotifyTask(ctx, tasksA[0].ID, tokenA, true, 0, tasksA[0].Attempts, 200, "", "", 15); err != notify.ErrStaleNotifyLease {
 		t.Fatalf("stale finish err = %v, want ErrStaleNotifyLease", err)
 	}
 	var status string
@@ -616,7 +616,7 @@ func TestFinishNotifyTaskLeaseFencing(t *testing.T) {
 	}
 
 	// Worker B（当前所有者）正常完成。
-	if err := store.FinishNotifyTask(ctx, tasksB[0].ID, tokenB, true, 0, tasksB[0].Attempts, 200, "", ""); err != nil {
+	if err := store.FinishNotifyTask(ctx, tasksB[0].ID, tokenB, true, 0, tasksB[0].Attempts, 200, "", "", 15); err != nil {
 		t.Fatalf("owner finish: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, tasksB[0].ID).Scan(&status); err != nil {
@@ -742,5 +742,142 @@ func TestRepeatFiringRefreshesObservation(t *testing.T) {
 	}
 	if history != 1 {
 		t.Fatalf("event history rows = %d, want 1 (receipt dedup keeps history unique)", history)
+	}
+}
+
+// AUD-002（#11，真实 PG）：通知终态出口 —— max attempts / ssrf / 禁用渠道
+// 僵尸行 / 人工重放。
+func TestNotifyTerminalStates(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	activeAuthority(t, store)
+	at := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+
+	enqueue := func(name string) string {
+		t.Helper()
+		ev := notifyEvent("nt-"+name, eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+		ev.AlertName = name
+		ev.EventKey = "ek-" + name
+		ev.Source.ExternalRuleId = "rule-" + name
+		if _, err := store.ApplyEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		if err := pool.QueryRow(ctx, `
+			SELECT o.id::text FROM notification_outbox o
+			JOIN alert_instances i ON i.id=o.alert_instance_id
+			WHERE i.name=$1`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	claim := func() notify.Task {
+		t.Helper()
+		tasks, err := store.ClaimNotifyTasks(ctx, 10, time.Minute)
+		if err != nil || len(tasks) != 1 {
+			t.Fatalf("claim: %d err=%v", len(tasks), err)
+		}
+		return tasks[0]
+	}
+	statusOf := func(id string) string {
+		t.Helper()
+		var st string
+		if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id=$1`, id).Scan(&st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	// ① max attempts → failed（不再无限重试）
+	id := enqueue("MaxAttempts")
+	task := claim()
+	if err := store.FinishNotifyTask(ctx, task.ID, task.LeaseToken, false, 0, 15, 500, "retryable", "still failing", 15); err != nil {
+		t.Fatal(err)
+	}
+	if st := statusOf(id); st != "failed" {
+		t.Fatalf("max-attempts status = %s, want failed", st)
+	}
+
+	// ② ssrf 失败码 → 终态（旧实现只认 permanent，SSRF 无限重试）
+	id = enqueue("SSRF")
+	task = claim()
+	if err := store.FinishNotifyTask(ctx, task.ID, task.LeaseToken, false, 0, 1, 0, "ssrf", "forbidden address", 15); err != nil {
+		t.Fatal(err)
+	}
+	if st := statusOf(id); st != "failed" {
+		t.Fatalf("ssrf status = %s, want failed", st)
+	}
+
+	// ③ 禁用渠道的僵尸 pending 行 → 死信（sweep + gauge 一致）
+	id = enqueue("Orphan")
+	if _, err := pool.Exec(ctx, `UPDATE notification_channels SET enabled=false WHERE id=$1`, channelID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE notification_outbox SET updated_at=now()-interval '2 minutes' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.FailOrphanNotifyTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("orphan sweep = %d, want 1", n)
+	}
+	if st := statusOf(id); st != "failed" {
+		t.Fatalf("orphan status = %s, want failed", st)
+	}
+	if pending, err := store.CountPendingNotifyTasks(ctx); err != nil || pending != 0 {
+		t.Fatalf("pending gauge = %d err=%v, want 0 (disabled channel excluded)", pending, err)
+	}
+
+	// ④ 人工重放：failed → pending（attempts 归零），二次重放返回 not-found
+	replayed, err := store.ReplayNotifyTask(ctx, notifyTenant, id)
+	if err != nil || !replayed {
+		t.Fatalf("replay = %v err=%v", replayed, err)
+	}
+	var attempts int
+	if err := pool.QueryRow(ctx, `SELECT attempts, status FROM notification_outbox WHERE id=$1`, id).Scan(&attempts, new(string)); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || statusOf(id) != "pending" {
+		t.Fatalf("after replay attempts=%d status=%s", attempts, statusOf(id))
+	}
+	if replayed, _ := store.ReplayNotifyTask(ctx, notifyTenant, id); replayed {
+		t.Fatal("replaying a pending task must report not-found")
+	}
+}
+
+// AUD-012（#21，真实 PG）：shadow trail 覆盖切换前的 active 期积压；
+// RecordShadowDelivery 由唯一索引保证幂等（双副本并发不重复）。
+func TestShadowTrailAndIdempotentRecord(t *testing.T) {
+	store, pool := newNotifyTest(t)
+	ctx := context.Background()
+	const channelID = "abab0000-0000-0000-0000-000000000001"
+	seedChannel(t, pool, channelID)
+	activeAuthority(t, store)
+	at := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+
+	ev := notifyEvent("st-1", eventv1.EventSignal_EVENT_SIGNAL_FIRING, at)
+	if _, err := store.ApplyEvent(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	// Active→shadow switch: the pre-switch backlog must still appear in the trail.
+	if _, err := store.SyncNotifyAuthority(ctx, notify.ModeShadow); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.PeekNotifyTasks(ctx, 10)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("peek = %d err=%v, want the pre-switch backlog", len(tasks), err)
+	}
+
+	first, err := store.RecordShadowDelivery(ctx, tasks[0].ID)
+	if err != nil || !first {
+		t.Fatalf("first record = %v err=%v", first, err)
+	}
+	second, err := store.RecordShadowDelivery(ctx, tasks[0].ID)
+	if err != nil || second {
+		t.Fatalf("duplicate record = %v err=%v (unique index must dedup)", second, err)
 	}
 }

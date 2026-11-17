@@ -144,17 +144,31 @@ func (b *BaseStore) RenewNotifyLease(context.Context, string, string, time.Durat
 	return nil
 }
 
-func (m *modeStore) PeekNotifyTasks(_ context.Context, limit int, generation int64) ([]Task, error) {
+func (m *modeStore) PeekNotifyTasks(_ context.Context, limit int) ([]Task, error) {
 	var out []Task
 	for _, t := range m.tasks {
-		if t.AuthorityGeneration != generation {
-			continue
-		}
 		if len(out) < limit {
 			out = append(out, t)
 		}
 	}
 	return out, nil
+}
+
+func (m *modeStore) FailOrphanNotifyTasks(context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var n int64
+	var kept []Task
+	// Model the real sweep: a "disabled" channel sentinel marks orphans.
+	for _, t := range m.tasks {
+		if t.ChannelID == "disabled" {
+			n++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	m.tasks = kept
+	return n, nil
 }
 
 func (m *modeStore) RecordShadowDelivery(_ context.Context, taskID string) (bool, error) {
@@ -164,7 +178,7 @@ func (m *modeStore) RecordShadowDelivery(_ context.Context, taskID string) (bool
 	return true, nil
 }
 
-func (m *modeStore) FinishNotifyTask(_ context.Context, id, _ string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string) error {
+func (m *modeStore) FinishNotifyTask(_ context.Context, id, _ string, sent bool, _ time.Duration, attemptNo int, _ int, failureCode, _ string, _ int) error {
 	m.mu.Lock()
 	m.finished = append(m.finished, Finish{ID: id, Sent: sent, Failure: failureCode, AttemptNo: attemptNo})
 	m.mu.Unlock()
@@ -452,5 +466,44 @@ func TestNotifyMetrics(t *testing.T) {
 	svc2.DeliverOnce(ctx)
 	if got := testutil.ToFloat64(leaseRenewFailures.WithLabelValues("stale")) - beforeStale; got != 1 {
 		t.Fatalf("lease_renew_failures{stale} delta = %v, want 1", got)
+	}
+}
+
+// AUD-012（#21）：active→shadow 切换后，切换前的 active 期积压任务在 shadow
+// 期间仍产生 would-have-sent 审计（旧实现按 generation 过滤会漏）。
+func TestShadowTrailIncludesPreSwitchBacklog(t *testing.T) {
+	ctx := context.Background()
+	st := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(st, sender)
+	st.tasks = []Task{{ID: "backlog", Attempts: 1, Payload: []byte(`{}`), CreatedMode: ModeActive}}
+	svc.SetMode(ModeShadow)
+	svc.DeliverOnce(ctx)
+	if sender.sent != 0 {
+		t.Fatalf("shadow sent %d", sender.sent)
+	}
+	if len(st.shadowed) != 1 || st.shadowed[0] != "backlog" {
+		t.Fatalf("shadow trail = %v, want the pre-switch backlog to be recorded", st.shadowed)
+	}
+}
+
+// AUD-002（#11）：禁用/删除渠道的僵尸 pending 行被死信化，不再拖住 gauge。
+func TestOrphanSweepDeadLettersDisabledChannelTasks(t *testing.T) {
+	ctx := context.Background()
+	st := &modeStore{}
+	sender := &captureSender{}
+	svc := NewService(st, sender)
+	st.tasks = []Task{
+		{ID: "orphan", Attempts: 1, Payload: []byte(`{}`), CreatedMode: ModeActive, ChannelID: "disabled"},
+		{ID: "healthy", Attempts: 1, Payload: []byte(`{}`), CreatedMode: ModeActive, ChannelID: "ch-1"},
+	}
+	svc.DeliverOnce(ctx)
+	if sender.sent != 1 {
+		t.Fatalf("sent = %d, want 1 (only the healthy task)", sender.sent)
+	}
+	for _, task := range st.tasks {
+		if task.ID == "orphan" {
+			t.Fatal("orphan task still queued after sweep")
+		}
 	}
 }

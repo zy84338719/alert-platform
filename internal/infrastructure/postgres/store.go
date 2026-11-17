@@ -1014,7 +1014,7 @@ func (s *Store) RenewNotifyLease(ctx context.Context, id, leaseToken string, lea
 // audited and receives ErrStaleNotifyLease, never overwriting the owner.
 // An empty token (rows claimed by a pre-0008 binary mid-rollout) keeps the
 // legacy by-id behavior.
-func (s *Store) FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error {
+func (s *Store) FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string, maxAttempts int) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1041,7 +1041,12 @@ func (s *Store) FinishNotifyTask(ctx context.Context, id, leaseToken string, sen
 		tag, err = tx.Exec(ctx, `
 			UPDATE notification_outbox SET status='sent', lease_until=NULL, lease_token=NULL, updated_at=now()
 			WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid)`, id, token)
-	} else if failureCode == "permanent" {
+	} else if failureCode == "permanent" || failureCode == "ssrf" ||
+		(maxAttempts > 0 && attemptNo >= maxAttempts) {
+		// AUD-002: terminal outcomes — explicit permanent rejection, SSRF
+		// (config error, retry cannot help), or attempts exhausted. Without
+		// this a broken channel retried forever (attempts climbing, pending
+		// gauge never draining).
 		tag, err = tx.Exec(ctx, `
 			UPDATE notification_outbox SET status='failed', lease_until=NULL, lease_token=NULL, updated_at=now()
 			WHERE id=$1 AND ($2::uuid IS NULL OR lease_token=$2::uuid)`, id, token)
@@ -1476,23 +1481,56 @@ func (s *Store) CorrelateOnce(ctx context.Context) (int, error) {
 // (P9-OBS-04 gauge; sampled every 30s by the notify loop, not per tick).
 func (s *Store) CountPendingNotifyTasks(ctx context.Context) (int64, error) {
 	var n int64
+	// AUD-002: only tasks the claim can actually deliver — disabled/missing
+	// channels are excluded (the sweep dead-letters them separately).
 	err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM notification_outbox
-		WHERE status IN ('pending','retry_scheduled') AND created_mode='active'`).Scan(&n)
+		SELECT count(*) FROM notification_outbox o
+		WHERE o.status IN ('pending','retry_scheduled') AND o.created_mode='active'
+		  AND EXISTS (SELECT 1 FROM notification_channels c WHERE c.id=o.channel_id AND c.enabled)`).Scan(&n)
 	return n, err
 }
 
-// PeekNotifyTasks lists pending tasks of the current authority generation
-// without claiming (notify shadow mode).
-func (s *Store) PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]notify.Task, error) {
+// FailOrphanNotifyTasks dead-letters pending/retry tasks whose channel is
+// missing or disabled (AUD-002): the claim joins enabled channels, so these
+// rows could never be delivered yet sat pending forever.
+func (s *Store) FailOrphanNotifyTasks(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox o SET status='failed', lease_until=NULL, lease_token=NULL, updated_at=now()
+		WHERE o.status IN ('pending','retry_scheduled')
+		  AND NOT EXISTS (SELECT 1 FROM notification_channels c WHERE c.id=o.channel_id AND c.enabled)
+		  AND o.updated_at < now() - interval '1 minute'`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// ReplayNotifyTask resets a dead-lettered task for one more delivery attempt
+// (AUD-002 manual replay). Tenant-scoped; returns found=true when reset.
+func (s *Store) ReplayNotifyTask(ctx context.Context, tenantID, taskID string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox
+		SET status='pending', attempts=0, next_attempt_at=now(),
+		    lease_until=NULL, lease_token=NULL, updated_at=now()
+		WHERE id=$1 AND tenant_id=$2 AND status='failed'`, taskID, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// PeekNotifyTasks lists pending/retry tasks without claiming (notify shadow
+// mode). AUD-012: the would-have-sent trail covers ALL pending work — the
+// active-era backlog that existed before an active→shadow switch included —
+// because those tasks WOULD be sent if authority were active now.
+func (s *Store) PeekNotifyTasks(ctx context.Context, limit int) ([]notify.Task, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT o.id::text, o.tenant_id::text, o.channel_id::text, o.receiver_id, o.payload, o.attempts,
 		       c.type, c.config
 		FROM notification_outbox o
 		JOIN notification_channels c ON c.id = o.channel_id AND c.enabled
-		WHERE o.status = 'pending' AND o.next_attempt_at <= now()
-		  AND o.authority_generation = $2
-		ORDER BY o.next_attempt_at LIMIT $1`, limit, generation)
+		WHERE o.status IN ('pending','retry_scheduled') AND o.next_attempt_at <= now()
+		ORDER BY o.next_attempt_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1517,25 +1555,24 @@ func (s *Store) RecordShadowDelivery(ctx context.Context, taskID string) (bool, 
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var existing int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM audit_logs
-		WHERE operation='notify.shadow_would_send' AND details->>'shadow_task'=$1`, taskID).Scan(&existing); err != nil {
-		return false, err
-	}
-	if existing > 0 {
-		return false, nil
-	}
 	var tenant string
 	if err := tx.QueryRow(ctx, `SELECT tenant_id::text FROM notification_outbox WHERE id=$1`, taskID).Scan(&tenant); err != nil {
 		return false, err
 	}
 	raw, _ := json.Marshal(map[string]any{"shadow_task": taskID})
-	if _, err := tx.Exec(ctx, `
+	// AUD-012: INSERT ... ON CONFLICT DO NOTHING on the partial unique index
+	// uq_audit_shadow_task (0015) — two shadow replicas racing the same task
+	// can no longer double-write the trail.
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO audit_logs (id, tenant_id, actor_id, operation, object_type, object_id, details)
-		VALUES ($1,$2,'system','notify.shadow_would_send','notification',$3,$4::jsonb)`,
-		uuid.NewString(), tenant, taskID, raw); err != nil {
+		VALUES ($1,$2,'system','notify.shadow_would_send','notification',$3,$4::jsonb)
+		ON CONFLICT ((details->>'shadow_task')) WHERE operation='notify.shadow_would_send' DO NOTHING`,
+		uuid.NewString(), tenant, taskID, raw)
+	if err != nil {
 		return false, err
 	}
-	return true, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }

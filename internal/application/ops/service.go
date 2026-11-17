@@ -33,6 +33,9 @@ type Store interface {
 	ReportEdgeStatus(ctx context.Context, tenantID, sourceID string, walBytes, walPending int64) error
 	ListEdgeStatus(ctx context.Context, tenantID string) ([]EdgeStatus, error)
 	ListNotificationTasks(ctx context.Context, tenantID, status string, limit int) ([]NotificationTask, error)
+	// ReplayNotifyTask resets a dead-lettered (failed) task for one more
+	// delivery attempt; tenant-scoped, audited by the handler (AUD-002).
+	ReplayNotifyTask(ctx context.Context, tenantID, taskID string) (bool, error)
 }
 
 // RetentionStore adds the retention cleanups (RETN-002).

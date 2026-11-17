@@ -47,6 +47,9 @@ type Config struct {
 
 	// NotifyMode (REL-001): active|shadow|off — notification authority switch.
 	NotifyMode string `yaml:"notify_mode" env:"ALERT_NOTIFY_MODE" default:"active"`
+	// NotifyMaxAttempts dead-letters a task after N failed delivery attempts
+	// (AUD-002: without a bound, a broken channel retried forever).
+	NotifyMaxAttempts int `yaml:"notify_max_attempts" env:"ALERT_NOTIFY_MAX_ATTEMPTS" default:"15"`
 
 	// Notification delivery (NOTI-002): allowing private channel endpoints is
 	// a dev/test-only escape hatch for the SSRF dial guard (T-013).

@@ -25,6 +25,10 @@ var (
 		Namespace: "alert_platform", Subsystem: "notify", Name: "authority_generation",
 		Help: "Current persisted notification-authority generation.",
 	})
+	failedDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "alert_platform", Subsystem: "notify", Name: "failed_total",
+		Help: "Notifications dead-lettered by reason (permanent, ssrf, max_attempts, channel_unavailable).",
+	}, []string{"reason"})
 )
 
 // registerOnce: postgres imports the Task/Store types, so the API binary (which
@@ -34,7 +38,7 @@ var registerOnce sync.Once
 
 func registerMetrics() {
 	registerOnce.Do(func() {
-		for _, c := range []prometheus.Collector{attempts, pendingGauge, leaseRenewFailures, authorityGeneration} {
+		for _, c := range []prometheus.Collector{attempts, pendingGauge, leaseRenewFailures, authorityGeneration, failedDeliveries} {
 			if err := oekitmetrics.Registry.Register(c); err != nil {
 				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
 					panic(err)

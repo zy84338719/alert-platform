@@ -68,16 +68,22 @@ type Store interface {
 	// FinishNotifyTask records one attempt outcome. leaseToken (P1-02) fences
 	// the completion: a stale worker's late result is audited but never
 	// overwrites the current owner's state (ErrStaleNotifyLease).
-	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string) error
+	FinishNotifyTask(ctx context.Context, id, leaseToken string, sent bool, retryAfter time.Duration, attemptNo int, httpStatus int, failureCode, errMsg string, maxAttempts int) error
 	// RenewNotifyLease extends the current owner's lease before a send
 	// (P8-P1-04); ErrStaleNotifyLease when the task was re-claimed by another
 	// worker — the caller must NOT send (would duplicate a page).
 	RenewNotifyLease(ctx context.Context, id, leaseToken string, lease time.Duration) error
 	SuppressNotifyAtSend(ctx context.Context, taskID string, labels map[string]string) (bool, error)
-	// PeekNotifyTasks lists pending tasks of the given authority generation
-	// WITHOUT claiming or mutating them (REL-001 shadow mode: the
-	// would-have-sent trail must not disturb the delivery queue state machine).
-	PeekNotifyTasks(ctx context.Context, limit int, generation int64) ([]Task, error)
+	// PeekNotifyTasks lists pending/retry tasks WITHOUT claiming or mutating
+	// them (REL-001 shadow mode: the would-have-sent trail must not disturb the
+	// delivery queue state machine). AUD-012: the trail covers ALL pending
+	// work — including active-era backlog from before an active→shadow switch
+	// — not just the current generation.
+	PeekNotifyTasks(ctx context.Context, limit int) ([]Task, error)
+	// FailOrphanNotifyTasks dead-letters pending tasks whose channel is
+	// missing or disabled: they can never be claimed (claim joins enabled
+	// channels) yet used to sit pending forever, inflating the gauge.
+	FailOrphanNotifyTasks(ctx context.Context) (int64, error)
 	// RecordShadowDelivery writes one audited would-have-sent record; the
 	// same task is only recorded once (idempotent per task).
 	RecordShadowDelivery(ctx context.Context, taskID string) (bool, error)
@@ -126,11 +132,14 @@ type Service struct {
 	// inside the lease window, the per-channel limiter protects vendor
 	// quotas, and every send renews its lease right before the HTTP call.
 	concurrency int
+	maxAttempts int     // dead-letter threshold for delivery attempts (AUD-002)
 	channelRate float64 // sends/sec per channel; 0 = unlimited
 	rateMu      sync.Mutex
 	channelNext map[string]time.Time
 	// pendingSampledAt throttles the pending-depth COUNT (P9-OBS-04).
 	pendingSampledAt time.Time
+	// orphanSweptAt throttles the disabled-channel dead-letter sweep.
+	orphanSweptAt time.Time
 }
 
 // NewService builds the worker; defaults: tick 500ms, batch 50, lease 60s,
@@ -142,7 +151,14 @@ func NewService(store Store, sender Sender) *Service {
 		store: store, sender: sender,
 		interval: 500 * time.Millisecond, lease: time.Minute, batch: 50,
 		mode: ModeActive, authorityDirty: true,
-		concurrency: 4, channelNext: map[string]time.Time{},
+		concurrency: 4, maxAttempts: 15, channelNext: map[string]time.Time{},
+	}
+}
+
+// SetMaxAttempts configures the delivery dead-letter threshold (AUD-002).
+func (s *Service) SetMaxAttempts(n int) {
+	if n > 0 {
+		s.maxAttempts = n
 	}
 }
 
@@ -253,6 +269,7 @@ func (s *Service) deliverBatch(ctx context.Context) int {
 	if s.mode == ModeShadow {
 		return s.shadowOnce(ctx)
 	}
+	s.sweepOrphans(ctx)
 	tasks, err := s.store.ClaimNotifyTasks(ctx, s.batch, s.lease)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -291,7 +308,7 @@ func (s *Service) deliverTasks(ctx context.Context, tasks []Task) {
 // pending and untouched, so a later switch to active delivers them exactly
 // once through the normal path (REL-001 无双发/不丢不重发).
 func (s *Service) shadowOnce(ctx context.Context) int {
-	tasks, err := s.store.PeekNotifyTasks(ctx, s.batch, s.generation)
+	tasks, err := s.store.PeekNotifyTasks(ctx, s.batch)
 	if err != nil {
 		if ctx.Err() == nil {
 			logx.CtxError(ctx, "shadow peek failed", logx.ErrKey, err)
@@ -351,7 +368,7 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 		logx.CtxError(ctx, "silence re-check failed; delivery deferred (fail-closed)",
 			logx.ErrKey, err, "task", t.ID)
 		if ferr := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, false, 0, t.Attempts, 0, "retryable",
-			"silence re-check failed: "+err.Error()); ferr != nil {
+			"silence re-check failed: "+err.Error(), s.maxAttempts); ferr != nil {
 			logx.CtxError(ctx, "notify finish failed after silence error", logx.ErrKey, ferr, "task", t.ID)
 		}
 		return
@@ -368,7 +385,19 @@ func (s *Service) deliverOne(ctx context.Context, t Task) {
 	}
 	res := s.sender.Send(ctx, t.ChannelType, t.ChannelCfg, t.Payload)
 	attempts.WithLabelValues(t.ChannelType, attemptResult(res)).Inc()
-	if err := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err); err != nil {
+	// AUD-002: terminal outcomes are observable (failed counter) — the store
+	// dead-letters on permanent/ssrf/max-attempts.
+	if !res.Sent {
+		switch {
+		case res.FailureCode == "permanent":
+			failedDeliveries.WithLabelValues("permanent").Inc()
+		case res.FailureCode == "ssrf":
+			failedDeliveries.WithLabelValues("ssrf").Inc()
+		case t.Attempts >= s.maxAttempts:
+			failedDeliveries.WithLabelValues("max_attempts").Inc()
+		}
+	}
+	if err := s.store.FinishNotifyTask(ctx, t.ID, t.LeaseToken, res.Sent, res.RetryAfter, t.Attempts, res.HTTPStatus, res.FailureCode, res.Err, s.maxAttempts); err != nil {
 		if errors.Is(err, ErrStaleNotifyLease) {
 			// P1-02: the lease expired and another worker re-claimed — this
 			// result is a late duplicate; the attempt row was audited, the
@@ -416,6 +445,26 @@ func (s *Service) samplePending(ctx context.Context) {
 		return
 	}
 	pendingGauge.Set(float64(n))
+}
+
+// sweepOrphans dead-letters pending work whose channel was deleted/disabled
+// (they can never be claimed; AUD-002). Throttled to once a minute.
+func (s *Service) sweepOrphans(ctx context.Context) {
+	if time.Since(s.orphanSweptAt) < time.Minute {
+		return
+	}
+	s.orphanSweptAt = time.Now()
+	n, err := s.store.FailOrphanNotifyTasks(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logx.CtxError(ctx, "orphan notification sweep failed", logx.ErrKey, err)
+		}
+		return
+	}
+	if n > 0 {
+		failedDeliveries.WithLabelValues("channel_unavailable").Add(float64(n))
+		logx.CtxWarn(ctx, "dead-lettered notifications with disabled/missing channels", "rows", n)
+	}
 }
 
 // waitChannelSlot paces sends per channel (P8-P1-04). Returns false when the

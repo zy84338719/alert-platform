@@ -6,19 +6,20 @@ import "testing"
 func TestRBACMatrix(t *testing.T) {
 	allPerms := []string{
 		PermAlertsRead, PermAlertsAck, PermSourcesRead, PermSourcesWrite,
-		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead, PermAuditRead,
+		PermPoliciesRead, PermPoliciesWrite, PermChannelsWrite, PermNotificationsRead,
+		PermNotificationsWrite, PermAuditRead,
 	}
 	expect := map[string]map[string]bool{
 		RolePlatformAdmin: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: true, PermSourcesWrite: true,
-			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermAuditRead: true},
+			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: true},
 		RoleMaintainer: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: true, PermSourcesWrite: true,
-			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermAuditRead: false},
+			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: true, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: false},
 		RoleSRE: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
-			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: false, PermNotificationsRead: true, PermAuditRead: true},
+			PermPoliciesRead: true, PermPoliciesWrite: true, PermChannelsWrite: false, PermNotificationsRead: true, PermNotificationsWrite: true, PermAuditRead: true},
 		RoleOncall: {PermAlertsRead: true, PermAlertsAck: true, PermSourcesRead: false, PermSourcesWrite: false,
-			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: true, PermAuditRead: false},
+			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: true, PermNotificationsWrite: false, PermAuditRead: false},
 		RoleAuditor: {PermAlertsRead: true, PermAlertsAck: false, PermSourcesRead: false, PermSourcesWrite: false,
-			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: false, PermAuditRead: true},
+			PermPoliciesRead: false, PermPoliciesWrite: false, PermChannelsWrite: false, PermNotificationsRead: false, PermNotificationsWrite: false, PermAuditRead: true},
 	}
 	for role, perms := range expect {
 		for _, perm := range allPerms {

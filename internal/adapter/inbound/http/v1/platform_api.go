@@ -17,6 +17,7 @@ import (
 	"github.com/example/alert-platform/internal/application/authn"
 	"github.com/example/alert-platform/internal/application/ops"
 	"github.com/example/alert-platform/internal/application/query"
+	"github.com/google/uuid"
 )
 
 // PlatformStore is the operational store port (application/ops).
@@ -176,6 +177,35 @@ func RegisterPlatformAPI(h *server.Hertz) {
 			})
 		}
 		c.JSON(http.StatusOK, map[string]any{"tasks": out})
+	})
+
+	// Manual replay of a dead-lettered notification (AUD-002). Audited;
+	// requires notifications:write (maintainer/sre/platform_admin).
+	h.POST("/notifications/v1/:id/replay", func(ctx context.Context, c *app.RequestContext) {
+		id, ok := requirePerm(ctx, c, authn.PermNotificationsWrite)
+		if !ok {
+			return
+		}
+		if OpsStore == nil {
+			c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "ops store not wired"})
+			return
+		}
+		taskID := c.Param("id")
+		if _, err := uuid.Parse(taskID); err != nil {
+			c.JSON(http.StatusBadRequest, map[string]string{"message": "invalid notification id"})
+			return
+		}
+		replayed, err := OpsStore.ReplayNotifyTask(ctx, id.TenantID, taskID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		if !replayed {
+			c.JSON(http.StatusNotFound, map[string]string{"message": "no failed notification with that id"})
+			return
+		}
+		audit(ctx, id.TenantID, id.ActorID, "notification.replay", "notification", taskID, nil)
+		c.JSON(http.StatusAccepted, map[string]any{"task_id": taskID, "status": "pending"})
 	})
 
 	// Edge waterlines for the cluster health page (MC-002).

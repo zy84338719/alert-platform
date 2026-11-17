@@ -41,3 +41,25 @@ spec:
 # | worker | lag>200k 持续 5m | 翻倍 + 上游限流 |
 # | edge | WAL>1.5GiB | 磁盘扩容/上传限速上调 |
 # | PG | 连接>80% 或慢查询 P95>500ms | pgbouncer/读写分离评审 |
+
+---
+# AUD-002: notification dead-letter / retry storm（与 Helm prometheusRule 同步）
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alert-platform-notify
+  labels: { release: prometheus }
+spec:
+  groups:
+    - name: alert-platform.notify
+      rules:
+        - alert: AlertPlatformNotifyDeadLettered
+          expr: increase(alert_platform_notify_failed_total[15m]) > 0
+          for: 1m
+          labels: { severity: critical, team: sre }
+          annotations:
+            summary: "notifications dead-lettered (retry/replay after fixing the channel)"
+        - alert: AlertPlatformNotifyRetryStorm
+          expr: sum(rate(alert_platform_notify_attempt_total{result="retryable"}[10m])) > 1
+          for: 10m
+          labels: { severity: warning, team: sre }
