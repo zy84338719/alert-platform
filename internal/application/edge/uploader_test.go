@@ -8,12 +8,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -378,5 +380,70 @@ func TestUploaderRejectsHalfUplinkIdentity(t *testing.T) {
 	}
 	if _, err := NewUploader(&memWAL{}, UploaderConfig{Endpoint: "http://x", UplinkToken: "aps_t", EdgeID: "edge-1"}); err != nil {
 		t.Fatalf("paired uplink identity rejected: %v", err)
+	}
+}
+
+// AUD-009: the heartbeat must present the SAME identity as uploads. With an
+// edge uplink credential the center derives tenant/source from it (body tenant
+// is advisory); without one the legacy X-Edge-Key path stays.
+func TestUploaderHeartbeatIdentity(t *testing.T) {
+	type seen struct {
+		auth, edgeID, edgeKey, body string
+	}
+	capture := func() (*httptest.Server, func() []seen) {
+		var mu sync.Mutex
+		var got []seen
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			got = append(got, seen{r.Header.Get("Authorization"), r.Header.Get("X-Edge-Id"), r.Header.Get("X-Edge-Key"), string(raw)})
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}))
+		return srv, func() []seen {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]seen(nil), got...)
+		}
+	}
+
+	// ① edge uplink identity: bearer + X-Edge-Id, never the shared key.
+	srv, got := capture()
+	u, err := NewUploader(&memWAL{}, UploaderConfig{
+		Endpoint: srv.URL, EdgeKey: "aps_shared", UplinkToken: "aps_edge-uplink", EdgeID: "edge-01",
+		HeartbeatURL: srv.URL + "/hb", HeartbeatTenantID: "t1", HeartbeatSourceID: "s1",
+	})
+	if err != nil {
+		srv.Close()
+		t.Fatal(err)
+	}
+	u.heartbeat(context.Background())
+	srv.Close()
+	calls := got()
+	if len(calls) != 1 {
+		t.Fatalf("heartbeat calls = %d, want 1", len(calls))
+	}
+	if calls[0].auth != "Bearer aps_edge-uplink" || calls[0].edgeID != "edge-01" || calls[0].edgeKey != "" {
+		t.Fatalf("uplink heartbeat headers = %+v, want bearer+edge-id only", calls[0])
+	}
+	if !strings.Contains(calls[0].body, `"source_id":"s1"`) {
+		t.Fatalf("heartbeat body = %s", calls[0].body)
+	}
+
+	// ② legacy configuration: shared key path, no edge headers.
+	srv2, got2 := capture()
+	u2, err := NewUploader(&memWAL{}, UploaderConfig{
+		Endpoint: srv2.URL, EdgeKey: "aps_shared",
+		HeartbeatURL: srv2.URL + "/hb", HeartbeatTenantID: "t1", HeartbeatSourceID: "s1",
+	})
+	if err != nil {
+		srv2.Close()
+		t.Fatal(err)
+	}
+	u2.heartbeat(context.Background())
+	srv2.Close()
+	calls2 := got2()
+	if len(calls2) != 1 || calls2[0].edgeKey != "aps_shared" || calls2[0].auth != "" || calls2[0].edgeID != "" {
+		t.Fatalf("legacy heartbeat headers = %+v", calls2)
 	}
 }

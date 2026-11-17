@@ -4,8 +4,14 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrSourceNotOwned rejects a waterline write whose (tenant, source) pair is
+// not a registered source — the heartbeat must not trust body identity
+// (AUD-009).
+var ErrSourceNotOwned = errors.New("source not registered for tenant")
 
 // EdgeStatus is one edge's reported waterline.
 type EdgeStatus struct {

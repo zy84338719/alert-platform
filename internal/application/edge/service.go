@@ -283,7 +283,14 @@ func (u *Uploader) heartbeat(ctx context.Context) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if u.edgeKey != "" {
+	// AUD-009: heartbeats use the SAME identity as uploads. When an edge uplink
+	// credential is configured the center binds tenant/source from it, so the
+	// body tenant is advisory only; X-Edge-Key remains the legacy shared-key
+	// path for installations without edge identities.
+	if u.uplinkToken != "" {
+		req.Header.Set("X-Edge-Id", u.edgeID)
+		req.Header.Set("Authorization", "Bearer "+u.uplinkToken)
+	} else if u.edgeKey != "" {
 		req.Header.Set("X-Edge-Key", u.edgeKey)
 	}
 	resp, err := u.client.Do(req)

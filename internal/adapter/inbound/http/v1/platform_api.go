@@ -5,8 +5,10 @@ package v1
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/example/alert-platform/internal/application/authn"
 	"github.com/example/alert-platform/internal/application/ops"
 	"github.com/example/alert-platform/internal/application/query"
+	"github.com/example/alert-platform/internal/application/sourcereg"
 	"github.com/google/uuid"
 )
 
@@ -38,17 +41,39 @@ func SetEdgeAPIKey(key string) { EdgeAPIKey = key }
 // RegisterPlatformAPI mounts the operational endpoints.
 func RegisterPlatformAPI(h *server.Hertz) {
 	// Edge waterline heartbeat (called by the edge uploader loop).
+	//
+	// AUD-009: identity is derived SERVER-SIDE.
+	//   - X-Edge-Id present: edge uplink credential (P8-P0-02) — tenant from
+	//     the credential, body.source_id must be in its allowed set;
+	//   - legacy X-Edge-Key: shared-key auth, but (tenant, source) must be a
+	//     registered pair (ReportEdgeStatus enforces it) — the body can no
+	//     longer zero another tenant's waterline.
 	h.POST("/edge/v1/heartbeat", func(ctx context.Context, c *app.RequestContext) {
-		// Constant-time compare: the shared secret guards a waterline write.
-		got := string(c.GetHeader("X-Edge-Key"))
-		if EdgeAPIKey == "" || len(got) != len(EdgeAPIKey) ||
-			subtle.ConstantTimeCompare([]byte(got), []byte(EdgeAPIKey)) != 1 {
-			c.JSON(http.StatusUnauthorized, map[string]string{"message": "bad edge key"})
-			return
-		}
 		if OpsStore == nil {
 			c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "ops store not wired"})
 			return
+		}
+		var edgeIdent *sourcereg.EdgeIdentity
+		if edgeID := string(c.GetHeader("X-Edge-Id")); edgeID != "" {
+			if SourceRegistry == nil {
+				c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "source registry not wired"})
+				return
+			}
+			ident, err := SourceRegistry.AuthenticateEdge(ctx, bearerToken(c))
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, map[string]string{"message": "bad edge credential"})
+				return
+			}
+			edgeIdent = ident
+		} else {
+			// Hash both sides so ConstantTimeCompare sees equal length (no key
+			// length disclosure).
+			want := sha256.Sum256([]byte(EdgeAPIKey))
+			got := sha256.Sum256([]byte(string(c.GetHeader("X-Edge-Key"))))
+			if EdgeAPIKey == "" || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+				c.JSON(http.StatusUnauthorized, map[string]string{"message": "bad edge key"})
+				return
+			}
 		}
 		var body struct {
 			SourceID   string `json:"source_id"`
@@ -61,7 +86,24 @@ func RegisterPlatformAPI(h *server.Hertz) {
 			c.JSON(http.StatusBadRequest, map[string]string{"message": "source_id required"})
 			return
 		}
-		if err := OpsStore.ReportEdgeStatus(ctx, body.TenantID, body.SourceID, body.WalBytes, body.WalPending); err != nil {
+		tenantID := body.TenantID
+		if edgeIdent != nil {
+			// Credential is authoritative; body tenant is ignored entirely.
+			tenantID = edgeIdent.TenantID
+			if !edgeIdent.Authorizes(body.SourceID) {
+				c.JSON(http.StatusForbidden, map[string]string{"message": "source not allowed for this edge credential"})
+				return
+			}
+		}
+		if tenantID == "" {
+			c.JSON(http.StatusBadRequest, map[string]string{"message": "tenant_id required"})
+			return
+		}
+		if err := OpsStore.ReportEdgeStatus(ctx, tenantID, body.SourceID, body.WalBytes, body.WalPending); err != nil {
+			if errors.Is(err, ops.ErrSourceNotOwned) {
+				c.JSON(http.StatusForbidden, map[string]string{"message": "source not registered for this tenant"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, map[string]string{"message": err.Error()})
 			return
 		}

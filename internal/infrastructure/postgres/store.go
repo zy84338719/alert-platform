@@ -1177,12 +1177,24 @@ func (s *Store) CleanupReceipts(ctx context.Context, cutoff time.Time) (int64, i
 
 // ReportEdgeStatus upserts an edge waterline heartbeat (MC-002).
 func (s *Store) ReportEdgeStatus(ctx context.Context, tenantID, sourceID string, walBytes, walPending int64) error {
-	_, err := s.pool.Exec(ctx, `
+	// AUD-009: the (tenant, source) pair MUST be a registered source — the
+	// heartbeat used to upsert any caller-provided identity under a shared
+	// key, letting one edge zero another tenant's waterline.
+	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO edge_status (source_id, tenant_id, wal_bytes, wal_pending, updated_at)
-		VALUES ($1, $2, $3, $4, now())
+		SELECT $1::uuid, $2::uuid, $3, $4, now()
+		WHERE EXISTS (SELECT 1 FROM alert_sources s
+		              WHERE s.tenant_id=$2::uuid AND s.source_id=$1::uuid)
 		ON CONFLICT (source_id) DO UPDATE
-		SET wal_bytes=$3, wal_pending=$4, updated_at=now()`, sourceID, tenantID, walBytes, walPending)
-	return err
+		SET wal_bytes=EXCLUDED.wal_bytes, wal_pending=EXCLUDED.wal_pending, updated_at=now()`,
+		sourceID, tenantID, walBytes, walPending)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ops.ErrSourceNotOwned
+	}
+	return nil
 }
 
 // ListEdgeStatus returns the tenant's edge waterlines (ops.Store).
@@ -1326,7 +1338,7 @@ func (s *Store) FindAnchor(ctx context.Context, cand correlation.Alert) (*correl
 		  AND i.id::text <> $6
 		  AND i.starts_at <= $5::timestamptz
 		  AND i.starts_at BETWEEN ($5::timestamptz - interval '10 minutes') AND ($5::timestamptz + interval '10 minutes')
-		ORDER BY i.starts_at DESC LIMIT 1`,
+		ORDER BY i.starts_at DESC, ia.incident_id DESC LIMIT 1`,
 		cand.TenantID, cand.ClusterID, cand.EntityType, cand.EntityUID, cand.StartedAt, cand.InstanceID)
 	var a correlation.Alert
 	var incidentID string
@@ -1381,6 +1393,33 @@ func (s *Store) AutoLink(ctx context.Context, tenantID, incidentID, instanceID s
 
 // --- INC-005 escalation ---
 
+// AcquireLease renews the escalation/correlation single-flight lease
+// (AUD-008): even with N worker replicas, only one runs the scan per tick.
+func (s *Store) AcquireLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	var got string
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO component_leases (name, owner, expires_at)
+		VALUES ('escalation.correlate', $1, now() + $2::bigint * interval '1 second')
+		ON CONFLICT (name) DO UPDATE
+		SET owner=EXCLUDED.owner, expires_at=EXCLUDED.expires_at, updated_at=now()
+		WHERE component_leases.owner = $1::uuid OR component_leases.expires_at < now()
+		RETURNING owner::text`, owner, int64(ttl.Seconds())).Scan(&got)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return got == owner, nil
+}
+
+// ReleaseLease drops the escalation single-flight lease.
+func (s *Store) ReleaseLease(ctx context.Context, owner string) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM component_leases WHERE name='escalation.correlate' AND owner=$1::uuid`, owner)
+	return err
+}
+
 // EscalatableIncidents returns open incidents whose last escalation (or
 // creation) is older than every — the 5-minute un-ACK ladder.
 func (s *Store) EscalatableIncidents(ctx context.Context, every time.Duration) ([]escalation.EscalationCandidate, error) {
@@ -1391,7 +1430,9 @@ func (s *Store) EscalatableIncidents(ctx context.Context, every time.Duration) (
 		FROM incidents i
 		WHERE i.status='open'
 		  AND i.created_at < now() - $1::interval
-		  AND COALESCE((SELECT max(e.notified_at) FROM incident_escalations e WHERE e.incident_id=i.id), i.created_at) < now() - $1::interval`,
+		  AND COALESCE((SELECT max(e.notified_at) FROM incident_escalations e WHERE e.incident_id=i.id), i.created_at) < now() - $1::interval
+		ORDER BY i.created_at
+		LIMIT 200`,
 		secondsOf(every))
 	if err != nil {
 		return nil, err
@@ -1426,11 +1467,20 @@ func (s *Store) RecordEscalation(ctx context.Context, cand escalation.Escalation
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
+	// AUD-008: UNIQUE(incident_id, stage) + ON CONFLICT DO NOTHING — two
+	// replicas scanning the same candidate must not page twice or duplicate
+	// the audit row.
+	tag, err := tx.Exec(ctx, `
 		INSERT INTO incident_escalations (id, tenant_id, incident_id, stage, policy_version)
-		VALUES ($1,$2,$3,$4,$5)`,
-		uuid.NewString(), cand.TenantID, cand.IncidentID, stage, policyVersion); err != nil {
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (incident_id, stage) DO NOTHING`,
+		uuid.NewString(), cand.TenantID, cand.IncidentID, stage, policyVersion)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Another replica already escalated this stage: no page, stay idempotent.
+		return tx.Commit(ctx)
 	}
 	// Notification: same transaction (docs/04 §2), incident-subject keyspace.
 	var channelID string
