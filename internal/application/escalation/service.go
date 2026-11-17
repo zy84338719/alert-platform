@@ -19,6 +19,11 @@ const EscalateAfter = 5 * time.Minute
 type Store interface {
 	EscalatableIncidents(ctx context.Context, every time.Duration) ([]EscalationCandidate, error)
 	RecordEscalation(ctx context.Context, cand EscalationCandidate, policyVersion int64) error
+	// AcquireLease/ReleaseLease implement the single-flight lease (AUD-008):
+	// only one replica scans + escalates per tick. Empty owner skips leasing
+	// (unit tests / single-replica tooling).
+	AcquireLease(ctx context.Context, owner string, ttl time.Duration) (bool, error)
+	ReleaseLease(ctx context.Context, owner string) error
 }
 
 // EscalationCandidate mirrors the postgres row at the application boundary.
@@ -38,26 +43,55 @@ type Correlator interface {
 
 // Service runs the escalation (and optional correlation) scheduler.
 type Service struct {
-	store Store
-	corr  Correlator
-	every time.Duration
+	store    Store
+	corr     Correlator
+	every    time.Duration
+	interval time.Duration
+	owner    string // single-flight lease owner; empty = no leasing
 }
 
 // NewService builds the scheduler.
 func NewService(store Store, corr Correlator) *Service {
-	return &Service{store: store, corr: corr, every: EscalateAfter}
+	return &Service{store: store, corr: corr, every: EscalateAfter, interval: 30 * time.Second}
+}
+
+// SetOwner enables the single-flight lease (worker wiring passes a per-process
+// UUID; tests leave it empty).
+func (s *Service) SetOwner(owner string) { s.owner = owner }
+
+// SetTuning overrides the escalation threshold and scan interval.
+func (s *Service) SetTuning(every, interval time.Duration) {
+	if every > 0 {
+		s.every = every
+	}
+	if interval > 0 {
+		s.interval = interval
+	}
 }
 
 // Run ticks until ctx is done.
 func (s *Service) Run(ctx context.Context) error {
 	logx.CtxInfo(ctx, "escalation scheduler started", "every", s.every.String())
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	if s.owner != "" {
+		defer func() { _ = s.store.ReleaseLease(context.Background(), s.owner) }()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			if s.owner != "" {
+				ok, err := s.store.AcquireLease(ctx, s.owner, s.interval*3)
+				if err != nil {
+					logx.CtxError(ctx, "escalation lease failed", logx.ErrKey, err)
+					continue
+				}
+				if !ok {
+					continue // another replica owns this tick
+				}
+			}
 			s.RunOnce(ctx)
 		}
 	}
