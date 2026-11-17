@@ -13,6 +13,7 @@ import (
 
 	"github.com/example/alert-platform/internal/application/history"
 	"github.com/example/alert-platform/internal/application/query"
+	"github.com/google/uuid"
 )
 
 // QueryStore implements query.Store (PROC-007 read side).
@@ -125,23 +126,28 @@ func (s *QueryStore) ListAlerts(ctx context.Context, f query.AlertFilter) (query
 // GetAlertByID: fetched unfiltered; the service enforces tenant ownership.
 func (s *QueryStore) GetAlertByID(ctx context.Context, instanceID string) (*query.Alert, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT `+alertCols+` FROM alert_instances WHERE id::text=$1`, instanceID)
+		`SELECT `+alertCols+` FROM alert_instances WHERE id=$1::uuid`, instanceID)
 	return scanAlert(row)
 }
 
 // ListTransitions: newest first within the tenant + instance scope.
 func (s *QueryStore) ListTransitions(ctx context.Context, tenantID, instanceID string, pageSize int, pageToken string) (query.Page[query.Transition], error) {
+	// AUD-010: bind the uuid parameter directly — `alert_instance_id::text=$2`
+	// is an expression predicate and defeated idx_transitions_instance.
+	if _, err := uuid.Parse(instanceID); err != nil {
+		return query.Page[query.Transition]{}, query.ErrNotFound
+	}
 	offset := offsetToken(pageToken)
 	var total int64
 	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM alert_transitions WHERE tenant_id=$1 AND alert_instance_id::text=$2`,
+		SELECT count(*) FROM alert_transitions WHERE tenant_id=$1 AND alert_instance_id=$2::uuid`,
 		tenantID, instanceID).Scan(&total); err != nil {
 		return query.Page[query.Transition]{}, err
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT transition_id::text, alert_instance_id::text, from_state, to_state, event_id, transition_at
 		FROM alert_transitions
-		WHERE tenant_id=$1 AND alert_instance_id::text=$2
+		WHERE tenant_id=$1 AND alert_instance_id=$2::uuid
 		ORDER BY transition_at DESC, transition_id
 		LIMIT $3 OFFSET $4`, tenantID, instanceID, pageSize, offset)
 	if err != nil {

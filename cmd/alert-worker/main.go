@@ -14,8 +14,10 @@ package main
 
 import (
 	"context"
+
 	"flag"
 	"fmt"
+	"github.com/google/uuid"
 	"os"
 	"strings"
 	"time"
@@ -98,7 +100,10 @@ func main() {
 		var archiveSvc *archive.Service
 		if cfg.ClickhouseURL != "" {
 			archiveSvc = archive.NewService(postgres.NewArchiveStore(pool), clickhouse.New(
-				cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword))
+				cfg.ClickhouseURL, cfg.ClickhouseDB, cfg.ClickhouseUser, cfg.ClickhousePassword),
+				uuid.NewString()) // single-writer lease owner
+			archiveSvc.SetTuning(mustDurationOr(cfg.ArchiveInterval, 10*time.Second),
+				cfg.ArchiveBatch, cfg.ArchiveMaxBatches, cfg.ArchiveMaxAttempts)
 		}
 
 		// retention: receipts cleanup (RETN-001) + notifications/audit (RETN-002);

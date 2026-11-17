@@ -571,3 +571,36 @@ func TestMissingEventTimestampsFallBackToNow(t *testing.T) {
 		}
 	}
 }
+
+// AUD-005（#14）：stale → firing → 再次沉默 → stale —— 第二个 reconcile
+// transition 必须成功（旧实现固定 event_id 撞 UNIQUE，整个批次回滚且静默）。
+func TestReconcileStaleTwice(t *testing.T) {
+	store, pool := newStoreTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+
+	if _, err := store.ApplyEvent(ctx, canonical("rec-1", at)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.MarkStaleBySources(ctx, tenantA, []string{srcDF}, "source-silent"); err != nil || n != 1 {
+		t.Fatalf("first stale: n=%d err=%v", n, err)
+	}
+	// Re-confirmation (stale -> firing) with a later event.
+	if _, err := store.ApplyEvent(ctx, canonical("rec-2", at.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	// Source goes silent again: the second reconcile must NOT collide.
+	if n, err := store.MarkStaleBySources(ctx, tenantA, []string{srcDF}, "source-silent"); err != nil || n != 1 {
+		t.Fatalf("second stale: n=%d err=%v (fixed event_id would break here)", n, err)
+	}
+
+	var staleTransitions, distinctEventIDs int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), count(DISTINCT event_id) FROM alert_transitions WHERE to_state='stale'`).
+		Scan(&staleTransitions, &distinctEventIDs); err != nil {
+		t.Fatal(err)
+	}
+	if staleTransitions != 2 || distinctEventIDs != 2 {
+		t.Fatalf("stale transitions = %d (distinct ids %d), want 2/2", staleTransitions, distinctEventIDs)
+	}
+}

@@ -90,3 +90,40 @@ func TestErrorsSurface(t *testing.T) {
 		t.Fatal("HTTP 500 must surface on read")
 	}
 }
+
+// AUD-001（#10）：INSERT 必须带 wait_end_of_query；执行期异常（200 正文
+// 注入 Code: … DB::Exception）不得被判成功；4xx 归类 permanent，避免每
+// tick 无限重试。
+func TestInsertWaitsAndDetectsBodyException(t *testing.T) {
+	var sawWait string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawWait = r.URL.Query().Get("wait_end_of_query")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Code: 241. DB::Exception: Memory limit exceeded"))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "db", "", "")
+	err := c.InsertTransitions(context.Background(), []archive.Transition{{TenantID: "t", TransitionID: "u"}})
+	if sawWait != "1" {
+		t.Fatalf("wait_end_of_query = %q, want 1", sawWait)
+	}
+	if err == nil {
+		t.Fatal("200 body carrying DB::Exception must be an error (silent batch loss)")
+	}
+	if IsPermanent(err) {
+		t.Fatalf("execution-time exception should be retryable, got permanent: %v", err)
+	}
+}
+
+func TestClient4xxIsPermanent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("Code: 27. DB::Exception: Cannot parse input"))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "", "", "")
+	if err := c.InsertTransitions(context.Background(), []archive.Transition{{TenantID: "t"}}); !IsPermanent(err) {
+		t.Fatalf("4xx error = %v, want PermanentError", err)
+	}
+}

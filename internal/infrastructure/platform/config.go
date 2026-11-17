@@ -71,6 +71,12 @@ type Config struct {
 	// HistoryPGWindow is how far back PG answers history reads before routing
 	// to the ClickHouse archive (docs/05; default 168h = PG retention window).
 	HistoryPGWindow string `yaml:"history_pg_window" env:"ALERT_HISTORY_PG_WINDOW" default:"168h"`
+	// Archive pacing (AUD-010): env knobs so a large backfill can be slowed
+	// down or sped up without a rebuild.
+	ArchiveInterval    string `yaml:"archive_interval" env:"ALERT_ARCHIVE_INTERVAL" default:"10s"`
+	ArchiveBatch       int    `yaml:"archive_batch" env:"ALERT_ARCHIVE_BATCH" default:"500"`
+	ArchiveMaxBatches  int    `yaml:"archive_max_batches" env:"ALERT_ARCHIVE_MAX_BATCHES" default:"10"`
+	ArchiveMaxAttempts int    `yaml:"archive_max_attempts" env:"ALERT_ARCHIVE_MAX_ATTEMPTS" default:"10"`
 
 	// RetentionReceipts is the event-receipt retention window (RETN-001);
 	// must exceed the idempotency horizon. CleanupInterval is its tick.

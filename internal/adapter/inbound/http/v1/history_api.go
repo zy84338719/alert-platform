@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/oekit/logx"
 	mw "github.com/oekit/middleware"
 	ekiterrors "github.com/oekit/pkg/errors"
 
@@ -61,14 +62,26 @@ func ListHistoryTransitions(ctx context.Context, c *app.RequestContext) {
 		}
 		limit = n
 	}
-	rows, archived, err := HistorySvc.Query(ctx, identity.TenantID, from, to, limit)
+	res, err := HistorySvc.Query(ctx, identity.TenantID, from, to, limit)
 	if err != nil {
+		// AUD-014: log the underlying error (snippet included by the client)
+		// before collapsing to 502 — a silent generic error is uninvestigable.
+		logx.CtxError(ctx, "history query failed", "component", "alert-api",
+			"tenant", identity.TenantID, "from", from.UTC().Format(time.RFC3339),
+			"to", to.UTC().Format(time.RFC3339), logx.ErrKey, err)
 		mw.Fail(ctx, c, ekiterrors.NewBizErrorWithStatus(50202, 502, "history backend error"))
 		return
 	}
+	var nextFrom any
+	if res.NextFrom != nil {
+		nextFrom = res.NextFrom.UTC().Format(time.RFC3339)
+	}
 	c.JSON(200, map[string]any{
-		"transitions": rows,
-		"archived":    archived, // true = answered by ClickHouse
+		"transitions": res.Transitions,
+		"archived":    res.Archived,  // true = ClickHouse answered (any part)
+		"truncated":   res.Truncated, // more rows exist; continue with next_from as the new "to"
+		"next_from":   nextFrom,
+		"coverage":    res.Coverage, // full | pg-window-only (no archive configured)
 		"from":        from.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		"to":          to.UTC().Format("2006-01-02T15:04:05Z07:00"),
 		"limit":       limit,

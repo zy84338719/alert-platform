@@ -37,17 +37,18 @@ var wantTables = []string{
 	"notification_outbox",
 	"policy_versions",
 	"silences",
-	"source_credentials",      // 0002 (ING-003)
-	"notification_channels",   // 0003 (NOTI-002)
-	"platform_tokens",         // 0003 (AUTH-001)
-	"edge_status",             // 0005 (MC-002)
-	"edge_leases",             // 0004 (HT-002)
-	"uid_history",             // 0006 (INC-004)
-	"event_history",           // 0007 (P0-05 事件历史)
-	"incident_escalations",    // 0006 (INC-005)
-	"notification_authority",  // 0009 (P8-P0-01 通知权持久化)
-	"edge_uplink_credentials", // 0010 (P8-P0-02 Edge 上行身份)
-	"archive_cursors",         // 0012 (P9-CH-01 归档游标)
+	"source_credentials",       // 0002 (ING-003)
+	"notification_channels",    // 0003 (NOTI-002)
+	"platform_tokens",          // 0003 (AUTH-001)
+	"edge_status",              // 0005 (MC-002)
+	"edge_leases",              // 0004 (HT-002)
+	"uid_history",              // 0006 (INC-004)
+	"event_history",            // 0007 (P0-05 事件历史)
+	"incident_escalations",     // 0006 (INC-005)
+	"notification_authority",   // 0009 (P8-P0-01 通知权持久化)
+	"edge_uplink_credentials",  // 0010 (P8-P0-02 Edge 上行身份)
+	"transition_archive_queue", // 0014 (P10 归档队列)
+	"component_leases",         // 0014 (P10 单写者租约)
 }
 
 func absMigrations(t *testing.T) string {
@@ -87,16 +88,16 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Up on clean database: %v", err)
 	}
-	if v1 != 13 {
-		t.Fatalf("version after first Up = %d, want 13 (0001..0013: R27 outbox created_mode)", v1)
+	if v1 != 14 {
+		t.Fatalf("version after first Up = %d, want 14 (0001..0014: P10 archive queue + component leases)", v1)
 	}
 
 	v2, err := Up(dsn, dir)
 	if err != nil {
 		t.Fatalf("second Up must not error (idempotent no-op): %v", err)
 	}
-	if v2 != 13 {
-		t.Fatalf("version after second Up = %d, want 13", v2)
+	if v2 != 14 {
+		t.Fatalf("version after second Up = %d, want 14", v2)
 	}
 
 	// SQL-level idempotency: execute the whole file again, bypassing the
@@ -127,6 +128,7 @@ func TestMigrateUpTwiceNoError(t *testing.T) {
 		"0011_alert_instance_active_unique.up.sql",
 		"0012_archive_cursor.up.sql",
 		"0013_outbox_created_mode.up.sql",
+		"0014_archive_queue.up.sql",
 	} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {

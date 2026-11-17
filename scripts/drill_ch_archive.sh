@@ -124,16 +124,49 @@ for i in $(seq 1 40); do
 done
 [ "$(psql_q "SELECT count(*) FROM alert_transitions")" = "2" ] || fail "PG transitions != 2"
 for i in $(seq 1 40); do
-  n=$(ch_q "SELECT count() FROM alert_transitions" | tr -d '[:space:]')
+  n=$(ch_q "SELECT count() FROM alert_transitions FINAL" | tr -d '[:space:]')
   [ "$n" = "2" ] && break
   sleep 1
 done
-CH_COUNT=$(ch_q "SELECT count() FROM alert_transitions" | tr -d '[:space:]')
+CH_COUNT=$(ch_q "SELECT count() FROM alert_transitions FINAL" | tr -d '[:space:]')
 [ "$CH_COUNT" = "2" ] || fail "ClickHouse rows = ${CH_COUNT}, want 2 (archiver did not catch up; see $WORK/worker.log)"
 echo "    PG=2 CH=${CH_COUNT}"
 
-step "history API routes to CH archive (PG window 1m, from 10m ago)"
-NOW=$(date +%s); FROM=$((NOW-600))
+step "late/replayed event is archived (P10-001: no event-time cursor)"
+NOW=$(date +%s); OLD=$((NOW-7200))
+curl -sf -X POST "http://127.0.0.1${API_ADDR}/ingest/v1/events:batch" \
+  -H 'Content-Type: application/json' -H "Authorization: Bearer ${SRC_TOKEN}" \
+  --data-binary "{\"batch_id\":\"ch-late-${RUN_ID}\",\"events\":[{
+    \"kind\":1,\"signal\":1,\"severity\":1,\"alert_name\":\"CH-Late\",
+    \"event_key\":\"ek-ch-late\",\"occurred_at\":{\"seconds\":${OLD}},
+    \"starts_at\":{\"seconds\":${OLD}},
+    \"resource\":{\"resource_type\":\"pod\",\"resource_uid\":\"ch-pod-late\",\"cluster_id\":\"c1\"},
+    \"source\":{\"source_id\":\"$SOURCE\",\"external_rule_id\":\"rule-ch-late\"}}]}" >/dev/null
+for i in $(seq 1 40); do
+  n=$(psql_q "SELECT count(*) FROM alert_transitions")
+  [ "$n" = "3" ] && break
+  sleep 1
+done
+[ "$(psql_q "SELECT count(*) FROM alert_transitions")" = "3" ] || fail "late event transition missing in PG"
+for i in $(seq 1 40); do
+  n=$(ch_q "SELECT count() FROM alert_transitions FINAL" | tr -d '[:space:]')
+  [ "$n" = "3" ] && break
+  sleep 1
+done
+[ "$(ch_q "SELECT count() FROM alert_transitions FINAL" | tr -d '[:space:]')" = "3" ] || fail "late event not archived (event-time cursor would lose it)"
+echo "    late event archived: PG=3 CH=3"
+
+step "CH write idempotency: re-insert the same rows, FINAL view stays 3"
+LATE_JSON=$(ch_q "SELECT * FROM alert_transitions FINAL WHERE transition_at < toDateTime(${OLD}+60) FORMAT JSONEachRow" | head -1)
+[ -n "$LATE_JSON" ] || fail "could not read a row for the duplicate test"
+curl -sf -u "${CH_USER}:${CH_PASS}" "http://127.0.0.1:${CH_PORT}/?database=${CH_DB}&query=INSERT%20INTO%20alert_transitions%20FORMAT%20JSONEachRow&wait_end_of_query=1" --data-binary "$LATE_JSON" >/dev/null
+sleep 1
+DUP_COUNT=$(ch_q "SELECT count() FROM alert_transitions FINAL" | tr -d '[:space:]')
+[ "$DUP_COUNT" = "3" ] || fail "duplicate insert changed FINAL count to ${DUP_COUNT} (ReplacingMergeTree dedup broken)"
+echo "    duplicate insert collapsed: FINAL count still 3"
+
+step "history API routes to CH archive (PG window 1m, wide window)"
+NOW=$(date +%s); FROM=$((NOW-10800))
 RESP=$(curl -sf -H "Authorization: Bearer ${USR_TOKEN}" \
   "http://127.0.0.1${API_ADDR}/history/v1/transitions?from=${FROM}&to=${NOW}&limit=10") || fail "history API failed"
 echo "$RESP" | python3 -c '
@@ -143,9 +176,10 @@ data=body.get("data", body)
 archived=data.get("archived")
 assert archived is True, "archived flag = %r, want True" % (archived,)
 rows=data.get("transitions") or []
-assert len(rows)==2, "transitions=%d, want 2" % len(rows)
+assert len(rows)==3, "transitions=%d, want 3 (incl. late)" % len(rows)
 states={r["to_state"] for r in rows}
 assert states=={"firing","resolved"}, "states=%r" % (states,)
-print("    archived=true transitions=2 states=", sorted(states))'
+assert data.get("coverage")=="full", "coverage=%r" % (data.get("coverage"),)
+print("    archived=true transitions=3 states=", sorted(states))'
 
 echo "CH ARCHIVE E2E PASS: ingest -> PG -> archiver -> ClickHouse -> history API"

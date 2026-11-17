@@ -80,6 +80,9 @@ func RegisterPlatformAPI(h *server.Hertz) {
 		f := query.EventFilter{TenantID: id.TenantID}
 		if v := string(c.Query("limit")); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				if n > 500 { // AUD-014: same cap class as the other query surfaces
+					n = 500
+				}
 				f.Limit = n
 			}
 		}

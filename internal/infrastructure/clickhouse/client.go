@@ -7,6 +7,7 @@ package clickhouse
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,11 +65,15 @@ func (c *Client) InsertTransitions(ctx context.Context, rows []archive.Transitio
 
 // ListTransitionsRange implements history.Store over the archive.
 func (c *Client) ListTransitionsRange(ctx context.Context, tenantID string, from, to time.Time, limit int) ([]history.Transition, error) {
+	// AUD-013: the DateTime64 parameters carry an EXPLICIT 'UTC' type — a bare
+	// DateTime64 is parsed in the server/session timezone and shifts the read
+	// window on any non-UTC instance. FINAL hides unmerged ReplacingMergeTree
+	// duplicates (at-least-once archive writes).
 	q := `SELECT transition_id, instance_id, from_state, to_state, event_id, transition_at
-	      FROM alert_transitions
+	      FROM alert_transitions FINAL
 	      WHERE tenant_id = {tenant:UUID}
-	        AND transition_at >= {from:DateTime64(3)}
-	        AND transition_at < {to:DateTime64(3)}
+	        AND transition_at >= {from:DateTime64(3, 'UTC')}
+	        AND transition_at < {to:DateTime64(3, 'UTC')}
 	      ORDER BY transition_at DESC
 	      LIMIT {lim:UInt32}
 	      FORMAT JSON`
@@ -133,6 +138,11 @@ func (c *Client) postBodyWithQuery(ctx context.Context, query string, params map
 	}
 	q := url.Values{}
 	q.Set("query", query)
+	// AUD-001（#10）: without wait_end_of_query the HTTP status can be sent
+	// BEFORE the statement finished; execution-time errors are then injected
+	// into the body while the status stays 200 — the archiver would advance
+	// its cursor and silently lose the batch. This makes the status truthful.
+	q.Set("wait_end_of_query", "1")
 	if c.database != "" {
 		q.Set("database", c.database)
 	}
@@ -156,9 +166,45 @@ func (c *Client) postBodyWithQuery(ctx context.Context, query string, params map
 		return nil, fmt.Errorf("clickhouse: read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("clickhouse: HTTP %d: %s", resp.StatusCode, snippet(respBody))
+		msg := fmt.Sprintf("clickhouse: HTTP %d: %s", resp.StatusCode, snippet(respBody))
+		// 4xx means the statement/data was rejected: retrying the identical
+		// batch every tick can never succeed (AUD-001 classification).
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return nil, &PermanentError{Err: errors.New(msg)}
+		}
+		return nil, errors.New(msg)
+	}
+	// Belt and braces: a 200 body may still carry a ClickHouse exception
+	// (implementations/proxies that ignore wait_end_of_query). Never treat
+	// such a response as success.
+	if looksLikeCHException(respBody) {
+		return nil, fmt.Errorf("clickhouse: execution error in 200 body: %s", snippet(respBody))
 	}
 	return respBody, nil
+}
+
+// PermanentError marks a CH rejection that retrying cannot fix (4xx / data
+// errors). Callers dead-letter such rows instead of retrying forever.
+type PermanentError struct{ Err error }
+
+func (e *PermanentError) Error() string { return "clickhouse permanent: " + e.Err.Error() }
+func (e *PermanentError) Unwrap() error { return e.Err }
+
+// IsPermanent reports whether err (or its chain) is a PermanentError.
+func IsPermanent(err error) bool {
+	var pe *PermanentError
+	return errors.As(err, &pe)
+}
+
+// looksLikeCHException detects an exception payload in a 200 response body.
+// ClickHouse exceptions start with "Code: <n>. DB::Exception:".
+func looksLikeCHException(body []byte) bool {
+	head := body
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	s := string(head)
+	return strings.HasPrefix(strings.TrimSpace(s), "Code: ") && strings.Contains(s, "DB::Exception")
 }
 
 func snippet(b []byte) string {

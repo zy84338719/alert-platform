@@ -316,13 +316,25 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 		}
 	}
 	transitionID := uuid.NewString()
+	transitionAt := orNow(occurredAt, time.Now)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO alert_transitions
 			(transition_id, tenant_id, alert_instance_id, from_state, to_state, event_id, transition_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		transitionID, ev.GetTenantId(), instanceID, string(snapshot.State), string(outcome.Next.State),
-		ev.GetEventId(), orNow(occurredAt, time.Now)); err != nil {
+		ev.GetEventId(), transitionAt); err != nil {
 		return ApplyOutcome{}, fmt.Errorf("insert transition: %w", err)
+	}
+	// AUD-001: enqueue the archive write in the SAME transaction. Late/replayed
+	// events queue here when they land — no event-time cursor to miss them.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO transition_archive_queue
+			(transition_id, tenant_id, instance_id, from_state, to_state, event_id, transition_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (transition_id) DO NOTHING`,
+		transitionID, ev.GetTenantId(), instanceID, string(snapshot.State), string(outcome.Next.State),
+		ev.GetEventId(), transitionAt); err != nil {
+		return ApplyOutcome{}, fmt.Errorf("enqueue transition archive: %w", err)
 	}
 	if err := insertDomainOutbox(ctx, tx, ev, map[string]any{
 		"transition_id": transitionID,
@@ -528,11 +540,24 @@ func (s *Store) MarkStaleBySources(ctx context.Context, tenantID string, sourceI
 			WHERE id=$1 AND episode_key=$2`, v.id, v.episode); err != nil {
 			return 0, err
 		}
+		// AUD-005: the reconcile event id MUST be unique per transition —
+		// a fixed "reconcile:source-silent" collided with
+		// UNIQUE(alert_instance_id,event_id,to_state) on the second
+		// stale->firing->stale cycle and rolled back the whole batch.
+		reconcileEventID := "reconcile:" + reason + ":" + transitionID
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO alert_transitions
 				(transition_id, tenant_id, alert_instance_id, from_state, to_state, event_id, transition_at)
 			VALUES ($1,$2,$3,$4,'stale',$5,now())`,
-			transitionID, tenantID, v.id, v.from, "reconcile:"+reason); err != nil {
+			transitionID, tenantID, v.id, v.from, reconcileEventID); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO transition_archive_queue
+				(transition_id, tenant_id, instance_id, from_state, to_state, event_id, transition_at)
+			VALUES ($1,$2,$3,$4,'stale',$5,now())
+			ON CONFLICT (transition_id) DO NOTHING`,
+			transitionID, tenantID, v.id, v.from, reconcileEventID); err != nil {
 			return 0, err
 		}
 		raw, _ := json.Marshal(map[string]any{
