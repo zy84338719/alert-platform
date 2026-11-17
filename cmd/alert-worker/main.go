@@ -24,8 +24,6 @@ import (
 
 	oekitmetrics "github.com/oekit/metrics"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/example/alert-platform/internal/application/archive"
 	"github.com/example/alert-platform/internal/application/escalation"
 	"github.com/example/alert-platform/internal/application/health"
@@ -58,7 +56,10 @@ func main() {
 	// The processor consume loop blocks the primary goroutine; relay and the
 	// health scheduler run beside it. Everything stops with the app context.
 	run := func(ctx context.Context) error {
-		pool, err := pgxpool.New(ctx, cfg.PGDSN)
+		pool, err := postgres.OpenPool(ctx, cfg.PGDSN, cfg.PGPoolMaxConns,
+			platform.ParseDurationOr(cfg.PGStatementTimeout, 5*time.Second),
+			platform.ParseDurationOr(cfg.PGLockTimeout, 2*time.Second),
+			platform.ParseDurationOr(cfg.PGIdleTxTimeout, 30*time.Second))
 		if err != nil {
 			return fmt.Errorf("pg pool: %w", err)
 		}
@@ -134,6 +135,11 @@ func main() {
 			return consumer.Run(ctx, processorSvc.Handle)
 		}})
 		platform.RegisterRuntimeCheck("background-tasks", group.ReadinessCheck())
+		platform.RegisterRuntimeCheck("postgres", func(ctx context.Context) error {
+			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			return pool.Ping(pingCtx)
+		})
 
 		runErr := group.Run(ctx)
 		if runErr != nil && ctx.Err() == nil {

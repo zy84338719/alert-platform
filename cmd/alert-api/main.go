@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/example/alert-platform/internal/adapter/inbound/http/console"
 	httpadapter "github.com/example/alert-platform/internal/adapter/inbound/http/router"
@@ -54,7 +53,10 @@ func main() {
 
 	// Source registry (ING-003): pgxpool connects lazily; a down PG fails the
 	// vendor-webhook auth path (and readyz) instead of the whole process.
-	pool, err := pgxpool.New(context.Background(), cfg.PGDSN)
+	pool, err := postgres.OpenPool(context.Background(), cfg.PGDSN, cfg.PGPoolMaxConns,
+		platform.ParseDurationOr(cfg.PGStatementTimeout, 5*time.Second),
+		platform.ParseDurationOr(cfg.PGLockTimeout, 2*time.Second),
+		platform.ParseDurationOr(cfg.PGIdleTxTimeout, 30*time.Second))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

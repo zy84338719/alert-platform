@@ -24,7 +24,9 @@ func newNotifyTest(t *testing.T) (*Store, *pgxpool.Pool) {
 	if _, err := Up(dsn, absMigrations(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	// Explicitly bounded pool (AUD-006): lock_timeout makes the identity-lock
+	// contention test deterministic instead of hanging forever.
+	pool, err := OpenPool(context.Background(), dsn, 0, 5*time.Second, 2*time.Second, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ package platform
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/oekit/core/config"
 )
@@ -124,6 +125,13 @@ type Config struct {
 
 	// PGDSN is the PostgreSQL connection string for the worker's store.
 	PGDSN string `yaml:"pg_dsn" env:"ALERT_PG_DSN" default:"postgres://postgres:postgres@127.0.0.1:5432/alert_platform?sslmode=disable"`
+	// Database pool + timeout bounds (AUD-006). A worker runs seven background
+	// loops on one pool: explicit sizing and statement/lock timeouts keep a
+	// slow PG from silently wedging consumption.
+	PGPoolMaxConns     int    `yaml:"pg_pool_max_conns" env:"ALERT_PG_MAX_CONNS" default:"20"`
+	PGStatementTimeout string `yaml:"pg_statement_timeout" env:"ALERT_PG_STATEMENT_TIMEOUT" default:"5s"`
+	PGLockTimeout      string `yaml:"pg_lock_timeout" env:"ALERT_PG_LOCK_TIMEOUT" default:"2s"`
+	PGIdleTxTimeout    string `yaml:"pg_idle_tx_timeout" env:"ALERT_PG_IDLE_TX_TIMEOUT" default:"30s"`
 }
 
 // Component names used for service.name, logs and bootstrap resources.
@@ -172,4 +180,16 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// ParseDurationOr parses raw and falls back to def on empty/invalid input
+// (startup-time config nudges must not crash a running component).
+func ParseDurationOr(raw string, def time.Duration) time.Duration {
+	if raw == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	return def
 }

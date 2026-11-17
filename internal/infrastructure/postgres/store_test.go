@@ -33,7 +33,9 @@ func newStoreTest(t *testing.T) (*Store, *pgxpool.Pool) {
 	if _, err := Up(dsn, absMigrations(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	// Explicitly bounded pool (AUD-006): lock_timeout makes the identity-lock
+	// contention test deterministic instead of hanging forever.
+	pool, err := OpenPool(context.Background(), dsn, 0, 5*time.Second, 2*time.Second, 30*time.Second)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
@@ -602,5 +604,46 @@ func TestReconcileStaleTwice(t *testing.T) {
 	}
 	if staleTransitions != 2 || distinctEventIDs != 2 {
 		t.Fatalf("stale transitions = %d (distinct ids %d), want 2/2", staleTransitions, distinctEventIDs)
+	}
+}
+
+// AUD-004（#13）：重复投递必须刷新 receipt.last_seen_at（旧实现 DO NOTHING
+// 只保留 first_seen，retention 7 天后删除活跃告警的 receipt → 重放重复入账）。
+func TestDuplicateReceiptRefreshesLastSeen(t *testing.T) {
+	store, pool := newStoreTest(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+
+	ev := canonical("rs-1", at)
+	if dup, err := store.ApplyEvent(ctx, ev); err != nil || dup {
+		t.Fatalf("first apply: dup=%v err=%v", dup, err)
+	}
+	// Age the receipt as if the alert has been firing for 30 days.
+	if _, err := pool.Exec(ctx, `
+		UPDATE event_receipts SET first_received_at = now()-interval '30 days',
+		       last_seen_at = now()-interval '30 days'`); err != nil {
+		t.Fatal(err)
+	}
+	// Replay (same transport id): duplicate, but last_seen_at must advance.
+	if dup, err := store.ApplyEvent(ctx, ev); err != nil || !dup {
+		t.Fatalf("replay: dup=%v err=%v", dup, err)
+	}
+	var count int
+	var fresh bool
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*), bool_and(last_seen_at > now() - interval '1 minute')
+		FROM event_receipts`).Scan(&count, &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || !fresh {
+		t.Fatalf("receipts=%d fresh=%v, want 1 fresh receipt", count, fresh)
+	}
+	// Retention must NOT delete an actively-observed receipt.
+	deleted, _, err := store.CleanupReceipts(ctx, time.Now().Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("retention deleted %d active receipt rows", deleted)
 	}
 }

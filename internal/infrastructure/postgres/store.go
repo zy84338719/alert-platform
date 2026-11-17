@@ -86,19 +86,49 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1) Idempotency: the receipt IS the dedup record. ON CONFLICT DO NOTHING
+	// 1) Idempotency: the receipt IS the dedup record. ON CONFLICT DO UPDATE
 	// covers BOTH uniqueness layers — transport_id and (tenant, source,
-	// source_event_key) — a retry with a different transport id but the same
-	// source event key is the same logical occurrence (docs/03 §2).
-	tag, err := tx.Exec(ctx, `
+	// source_event_key) — and REFRESHES last_seen_at on duplicates (AUD-004:
+	// with DO NOTHING the column stayed == first_seen, so retention deleted
+	// receipts of long-running alerts after 7d and replayed events re-applied).
+	// RETURNING (xmax = 0) distinguishes INSERT from CONFLICT UPDATE.
+	// SAVEPOINT: a source_event_key collision raises 23505 inside this tx; we
+	// roll back to the savepoint and refresh instead (the tx stays usable).
+	if _, err := tx.Exec(ctx, `SAVEPOINT receipt_ins`); err != nil {
+		return ApplyOutcome{}, fmt.Errorf("receipt savepoint: %w", err)
+	}
+	var inserted bool
+	err = tx.QueryRow(ctx, `
 		INSERT INTO event_receipts (tenant_id, source_id, transport_id, source_event_key)
 		VALUES ($1, $2, $3, NULLIF($4,''))
-		ON CONFLICT DO NOTHING`,
-		ev.GetTenantId(), ev.GetSource().GetSourceId(), ev.GetTransportId(), ev.GetEventKey())
+		ON CONFLICT (tenant_id, source_id, transport_id)
+		DO UPDATE SET last_seen_at = now()
+		RETURNING (xmax = 0)`,
+		ev.GetTenantId(), ev.GetSource().GetSourceId(), ev.GetTransportId(), ev.GetEventKey()).Scan(&inserted)
 	if err != nil {
-		return ApplyOutcome{}, fmt.Errorf("insert receipt: %w", err)
+		// A different transport id with the same (tenant, source, event_key)
+		// hits the OTHER unique index; PostgreSQL cannot infer two conflict
+		// targets in one statement. Refresh and treat as duplicate.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && ev.GetEventKey() != "" {
+			if _, rerr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT receipt_ins`); rerr != nil {
+				return ApplyOutcome{}, fmt.Errorf("receipt savepoint rollback: %w", rerr)
+			}
+			if _, uerr := tx.Exec(ctx, `
+				UPDATE event_receipts SET last_seen_at = now()
+				WHERE tenant_id=$1 AND source_id=$2 AND source_event_key=$3`,
+				ev.GetTenantId(), ev.GetSource().GetSourceId(), ev.GetEventKey()); uerr != nil {
+				return ApplyOutcome{}, fmt.Errorf("refresh receipt: %w", uerr)
+			}
+			inserted = false
+		} else {
+			return ApplyOutcome{}, fmt.Errorf("insert receipt: %w", err)
+		}
 	}
-	if tag.RowsAffected() == 0 {
+	if _, err := tx.Exec(ctx, `RELEASE SAVEPOINT receipt_ins`); err != nil {
+		return ApplyOutcome{}, fmt.Errorf("receipt savepoint release: %w", err)
+	}
+	if !inserted {
 		// P8-REG-01: a repeat FIRING observation deduped by a stable key
 		// (Alertmanager amObservationKey) must still refresh liveness — the
 		// receipt suppresses the state-machine input, but freezing
@@ -107,9 +137,8 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 		// only the observation timestamp moves.
 		if ev.GetSignal() == eventv1.EventSignal_EVENT_SIGNAL_FIRING {
 			if fp, ferr := fingerprintOf(ev); ferr == nil {
-				if _, lerr := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-					ev.GetTenantId()+"|"+fp); lerr != nil {
-					return ApplyOutcome{}, fmt.Errorf("identity lock: %w", lerr)
+				if lerr := tryIdentityLock(ctx, tx, ev.GetTenantId()+"|"+fp); lerr != nil {
+					return ApplyOutcome{}, lerr
 				}
 				if _, uerr := tx.Exec(ctx, `
 					UPDATE alert_instances
@@ -156,9 +185,8 @@ func (s *Store) applyEvent(ctx context.Context, ev *eventv1.AlertEvent) (ApplyOu
 	// and the (tenant, fingerprint, episode_key) uniqueness would not fire.
 	// The advisory lock is per (tenant, fingerprint) and released at commit;
 	// the partial unique index (0011) is the database-level backstop.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		ev.GetTenantId()+"|"+fingerprint); err != nil {
-		return ApplyOutcome{}, fmt.Errorf("identity lock: %w", err)
+	if err := tryIdentityLock(ctx, tx, ev.GetTenantId()+"|"+fingerprint); err != nil {
+		return ApplyOutcome{}, err
 	}
 
 	// 4) Health-only signals: NO_DATA/INFO update observation freshness but
@@ -508,7 +536,7 @@ func (s *Store) MarkStaleBySources(ctx context.Context, tenantID string, sourceI
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, episode_key, monitor_state FROM alert_instances
 		WHERE tenant_id=$1 AND source_id = ANY($2) AND monitor_state IN ('pending','firing')
-		FOR UPDATE`, tenantID, sourceIDs)
+		FOR UPDATE SKIP LOCKED`, tenantID, sourceIDs)
 	if err != nil {
 		return 0, err
 	}
@@ -719,6 +747,18 @@ func eventTime(ts *timestamppb.Timestamp) time.Time {
 		return time.Time{}
 	}
 	return ts.AsTime()
+}
+
+// tryIdentityLock waits for the per-identity transaction lock, BOUNDED by the
+// session lock_timeout (2s, AUD-006): a slow holder surfaces as a transient
+// error instead of pinning a pool connection indefinitely. Waiting (rather
+// than try-lock) keeps normal same-fingerprint concurrency working.
+func tryIdentityLock(ctx context.Context, tx pgx.Tx, key string) error {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
+		return fmt.Errorf("identity lock: %w", err)
+	}
+	return nil
 }
 
 func severityOrNull(ev *eventv1.AlertEvent) any {
