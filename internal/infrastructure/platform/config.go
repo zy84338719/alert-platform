@@ -49,6 +49,10 @@ type Config struct {
 	KafkaDLQTopic string `yaml:"kafka_dlq_topic" env:"ALERT_KAFKA_DLQ_TOPIC" default:"alert.dlq.v1"`
 	// KafkaGroupID is the worker consumer group.
 	KafkaGroupID string `yaml:"kafka_group_id" env:"ALERT_KAFKA_GROUP" default:"alert-worker-dev"`
+	// KafkaReadiness gates the alert-api Kafka metadata readiness check
+	// (AUD-013). Default true: ingest needs the broker. Dev clusters without
+	// Kafka set ALERT_KAFKA_READINESS=false explicitly (never silently).
+	KafkaReadiness bool `yaml:"kafka_readiness" env:"ALERT_KAFKA_READINESS" default:"true"`
 
 	// IngestRatePerSec / IngestBurst bound one authenticated source or edge
 	// (AUD-016). 0 disables limiting; defaults are high enough for normal

@@ -1046,3 +1046,21 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   all|processor|notifier|maintenance + retention/telemetry 单实例租约；chart `worker.profile`。
 - **验证**：`go test ./...` 全绿（PG 517s / Kafka 292s 容器套件）；关键包 `-race` 全绿；
   `check_deps.py`、IDL lint/build/drift、chart rules(9)/policies 矩阵 PASS；gofmt 仅历史遗留 EOF 差异。
+
+---
+
+## 2026-11-19 · R30：P10 批次集群落地（REVISION 11 / schema 16）+ 本地 E2E 复验
+
+- **集群**：rpi-k3s `ap-dev` 升级 **REVISION 11 / 0.6.3-dev / schema 16**；`transition_archive_queue`、
+  `component_leases` 已验证；api/edge Ready，`/healthz`、`/readyz` 200。证据
+  `docs/evidence/P10-cluster-verification-rpi-k3s-2026-11-19.md`。
+- **部署发现（真实问题）**：REVISION 9 首次升级时新 API Pod readiness 持续 503——#24 新增 Kafka
+  metadata 检查在无 Kafka 的 dev 集群 fail-closed。生产默认保持 true；新增
+  `ALERT_KAFKA_READINESS=false` 显式逃生阀（启动告警），dev values 关闭后 REVISION 10/11 成功。
+- **补漏**：#25 验收要求 Edge 两个拒绝计数进入指标中心目录，catalog 增
+  `edge_wal_rejected_rate` / `edge_upload_poison_rate`（platform tier）。
+- **本地 E2E 复验全 PASS**：`smoke_e2e.sh`（schema 16、202→Kafka→PG、trace、幂等）、
+  `drill_ch_archive.sh`（真实 CH、迟到归档、FINAL 去重、history archived=true）、
+  `drill_rel002.sh`（shadow 零外发、对账 5/5、fencing 回滚不丢不重发）。
+- **指标中心真实链路**：本地真实 API + stub Prometheus 验证 admin/oncall catalog 分级、
+  oncall 平台指标 403、tenant matcher 注入、响应 `{timestamp,value}`；集群因无 Prometheus 返回 503。

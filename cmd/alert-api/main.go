@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/oekit/logx"
 
 	"github.com/example/alert-platform/internal/adapter/inbound/http/console"
 	httpadapter "github.com/example/alert-platform/internal/adapter/inbound/http/router"
@@ -106,12 +107,18 @@ func main() {
 	})
 	// AUD-013: ingest accepts events into Kafka, so broker reachability is a
 	// readiness dependency — a live PG alone must not report "ready" while
-	// every publish fails.
-	platform.RegisterRuntimeCheck("kafka", func(ctx context.Context) error {
-		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		return producer.Ping(pingCtx)
-	})
+	// every publish fails. ALERT_KAFKA_READINESS=false is the explicit escape
+	// hatch for dev clusters that intentionally run without Kafka.
+	if cfg.KafkaReadiness {
+		platform.RegisterRuntimeCheck("kafka", func(ctx context.Context) error {
+			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			return producer.Ping(pingCtx)
+		})
+	} else {
+		logx.CtxWarn(context.Background(), "Kafka readiness check DISABLED (ALERT_KAFKA_READINESS=false); ingest will fail while the broker is unreachable",
+			"component", platform.ComponentAPI)
+	}
 
 	// P9-MC-01: the metrics center needs a Prometheus HTTP API; empty URL
 	// leaves the endpoints fail-closed (503) with a clear message.

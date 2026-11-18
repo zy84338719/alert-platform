@@ -4,7 +4,7 @@
 image:
   registry: ""
   repository: alert-platform
-  tag: "0.6.0-dev"
+  tag: "0.6.3-dev"
   pullPolicy: IfNotPresent
 
 nodeSelector:
@@ -21,7 +21,9 @@ api:
   replicas: 1
   env:
     ALERT_PG_DSN: "postgres://postgres:postgres@dev-pg.alert-platform.svc:5432/alert_platform?sslmode=disable"
-    ALERT_KAFKA_BROKERS: "dev-kafka.alert-platform.svc:9092"  # 集群暂无 Kafka；producer 惰性连接不影响 readiness
+    ALERT_KAFKA_BROKERS: "dev-kafka.alert-platform.svc:9092"  # 集群暂无 Kafka
+    # 无 Kafka 的 dev 集群显式关闭 Kafka readiness（生产保持默认 true，ingest 依赖 broker）。
+    ALERT_KAFKA_READINESS: "false"
 
 worker:
   enabled: false   # 集群暂无 Kafka：consumer 会 fail-stop 反复重启；待 Kafka 接入后开启

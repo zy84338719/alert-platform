@@ -34,6 +34,14 @@ func TestTenantIsolation(t *testing.T) {
 	if len(adminCatalog) <= len(tenantCatalog) {
 		t.Fatalf("admin catalog = %d, tenant = %d", len(adminCatalog), len(tenantCatalog))
 	}
+	// AUD-016: edge rejection counters are part of the platform catalog.
+	names := map[string]bool{}
+	for _, m := range adminCatalog {
+		names[m.Name] = true
+	}
+	if !names["edge_wal_rejected_rate"] || !names["edge_upload_poison_rate"] {
+		t.Fatalf("edge rejection metrics missing from catalog: %v", names)
+	}
 
 	if _, err := svc.Query(context.Background(), "ingest_events_rate", "tenant-a", false, now.Add(-time.Hour), now, time.Minute); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("tenant platform query: %v, want ErrForbidden", err)
