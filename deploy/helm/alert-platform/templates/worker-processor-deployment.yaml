@@ -1,0 +1,67 @@
+{{- if and .Values.worker.enabled .Values.workerProcessor.enabled }}
+# P10-008 / P11: dedicated processor pool. Scaling this Deployment multiplies
+# ONLY Kafka consumer-group members; singleton maintenance loops stay in the
+# `worker` Deployment (profile notifier/maintenance) and are DB-leased anyway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "alert-platform.fullname" . }}-worker-processor
+  labels:
+    {{- include "alert-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.workerProcessor.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alert-platform
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/role: processor
+  template:
+    metadata:
+      # component=worker keeps the existing NetworkPolicy/PDB selectors
+      # applicable; role=processor distinguishes this pool from the singleton
+      # worker Deployment.
+      labels: {{- include "alert-platform.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/role: processor
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker-processor
+          image: "{{ .Values.image.registry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["alert-worker"]
+          ports:
+            - name: http
+              containerPort: 8081
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources: {{- toYaml .Values.workerProcessor.resources | nindent 12 }}
+          env:
+            {{- range $k, $v := .Values.worker.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := .Values.workerProcessor.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            - name: ALERT_WORKER_ADDR
+              value: ":8081"
+            - name: WORKER_PROFILE
+              value: "processor"
+{{- end }}

@@ -61,6 +61,7 @@ jobs:
           version: v3.14.4
       - run: python3 scripts/test_chart_policies.py
       - run: python3 scripts/test_chart_rules.py
+      - run: python3 scripts/test_chart_worker_profile.py
 
   # BASE-004: multi-arch image + SBOM. Every run builds linux/amd64+arm64
   # with SBOM/provenance attestations and uploads the OCI archive; pushing to

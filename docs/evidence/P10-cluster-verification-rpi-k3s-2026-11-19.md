@@ -21,7 +21,7 @@
 > `ALERT_KAFKA_READINESS=false`（启动告警）后 REVISION 10/11 正常。集群仍无 Kafka，
 > ingest 只验证到鉴权层。
 
-## 2. 验收检查（port-forward api :18080）
+## 2. 验收检查（port-forward api :18180，避开本机已占用的 18080；edge 用 pod 直转 :18182）
 
 | 检查 | 结果 |
 |---|---|
@@ -34,6 +34,7 @@
 | oncall token `GET /channels/v1` | 200（channels:read 拆分生效） |
 | oncall token `GET /history/v1/transitions` | 200（alerts:read） |
 | oncall token `GET /metrics/v1/query?metric=ingest_events_rate` | 503（本集群未配置 Prometheus backend；本地 stub Prometheus 已验证 403 平台越权） |
+| edge pod `/metrics` | `alert_platform_edge_wal_bytes` / `_wal_pending_records` 可见 |
 
 指标中心分级/租户 matcher 与响应 `{timestamp,value}` 形状在本地真实 API + stub Prometheus 下验证：
 

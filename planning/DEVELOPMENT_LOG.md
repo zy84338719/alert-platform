@@ -1064,3 +1064,8 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   `drill_rel002.sh`（shadow 零外发、对账 5/5、fencing 回滚不丢不重发）。
 - **指标中心真实链路**：本地真实 API + stub Prometheus 验证 admin/oncall catalog 分级、
   oncall 平台指标 403、tenant matcher 注入、响应 `{timestamp,value}`；集群因无 Prometheus 返回 503。
+- **P11 前置（chart）**：新增可选 `workerProcessor.enabled` Deployment（固定
+  `WORKER_PROFILE=processor`、独立 replicas，pod 保留 `component=worker` 以复用 NetworkPolicy/PDB，
+  附加 `role=processor`）；`scripts/test_chart_worker_profile.py` 纳入 CI charts job。
+- **部署坑**：本机 18080 已被其他 kubectl port-forward 占用，集群验收改用独立端口 18180
+  （此前一次 curl 可能命中错误服务，已在证据文件中更正）。
