@@ -45,7 +45,9 @@ func newMetricsCenterRouter(t *testing.T, svc *metricsquery.Service) *server.Her
 func TestMetricsCenterAPI(t *testing.T) {
 	client := &fakeMetricsClient{series: []metricsquery.Series{{
 		Labels: map[string]string{"result": "sent"},
-		Points: [][2]float64{{1700000000, 3}},
+		// A zero sample is meaningful: the JSON contract must carry
+		// {"timestamp":..., "value":0}, not drop the key (AUD-007 follow-up).
+		Points: [][2]float64{{1700000000, 3}, {1700000060, 0}},
 	}}}
 	svc := metricsquery.NewService(client)
 	h := newMetricsCenterRouter(t, svc)
@@ -105,6 +107,9 @@ func TestMetricsCenterAPI(t *testing.T) {
 		}
 		if len(client.exprs) != 1 || !strings.Contains(client.exprs[0], `{tenant="tenant-a"}`) {
 			t.Fatalf("tenant matcher not injected: %v", client.exprs)
+		}
+		if !strings.Contains(w.Body.String(), `"value":0`) {
+			t.Fatalf("zero sample dropped from JSON: %s", w.Body.String())
 		}
 	})
 	t.Run("admin query returns aggregate", func(t *testing.T) {

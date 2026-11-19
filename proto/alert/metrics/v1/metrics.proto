@@ -31,7 +31,9 @@ message MetricsQueryRangeRequest {
 
 message MetricPoint {
   double timestamp = 1;
-  double value = 2;
+  // optional: a real sample value of 0 must be serialized (proto3 implicit
+  // presence + omitempty would drop it and break charts).
+  optional double value = 2;
 }
 
 message MetricSeries {

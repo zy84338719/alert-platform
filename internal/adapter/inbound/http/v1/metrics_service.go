@@ -112,7 +112,8 @@ func MetricsQueryRange(ctx context.Context, c *app.RequestContext) {
 	for _, s := range res.Series {
 		points := make([]*metricsv1.MetricPoint, 0, len(s.Points))
 		for _, p := range s.Points {
-			points = append(points, &metricsv1.MetricPoint{Timestamp: p[0], Value: p[1]})
+			v := p[1]
+			points = append(points, &metricsv1.MetricPoint{Timestamp: p[0], Value: &v})
 		}
 		resp.Series = append(resp.Series, &metricsv1.MetricSeries{Labels: s.Labels, Points: points})
 	}

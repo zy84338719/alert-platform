@@ -245,9 +245,11 @@ func (x *MetricsQueryRangeRequest) GetStep() string {
 }
 
 type MetricPoint struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Timestamp     float64                `protobuf:"fixed64,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	Value         float64                `protobuf:"fixed64,2,opt,name=value,proto3" json:"value,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp float64                `protobuf:"fixed64,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// optional: a real sample value of 0 must be serialized (proto3 implicit
+	// presence + omitempty would drop it and break charts).
+	Value         *float64 `protobuf:"fixed64,2,opt,name=value,proto3,oneof" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -290,8 +292,8 @@ func (x *MetricPoint) GetTimestamp() float64 {
 }
 
 func (x *MetricPoint) GetValue() float64 {
-	if x != nil {
-		return x.Value
+	if x != nil && x.Value != nil {
+		return *x.Value
 	}
 	return 0
 }
@@ -451,10 +453,11 @@ const file_alert_metrics_v1_metrics_proto_rawDesc = "" +
 	"\xb2\xbb\x18\x06metricR\x06metric\x12\x1f\n" +
 	"\x05start\x18\x02 \x01(\tB\t\xb2\xbb\x18\x05startR\x05start\x12\x19\n" +
 	"\x03end\x18\x03 \x01(\tB\a\xb2\xbb\x18\x03endR\x03end\x12\x1c\n" +
-	"\x04step\x18\x04 \x01(\tB\b\xb2\xbb\x18\x04stepR\x04step\"A\n" +
+	"\x04step\x18\x04 \x01(\tB\b\xb2\xbb\x18\x04stepR\x04step\"P\n" +
 	"\vMetricPoint\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x01R\ttimestamp\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x01R\x05value\"\xc4\x01\n" +
+	"\ttimestamp\x18\x01 \x01(\x01R\ttimestamp\x12\x19\n" +
+	"\x05value\x18\x02 \x01(\x01H\x00R\x05value\x88\x01\x01B\b\n" +
+	"\x06_value\"\xc4\x01\n" +
 	"\fMetricSeries\x12B\n" +
 	"\x06labels\x18\x01 \x03(\v2*.alert.metrics.v1.MetricSeries.LabelsEntryR\x06labels\x125\n" +
 	"\x06points\x18\x02 \x03(\v2\x1d.alert.metrics.v1.MetricPointR\x06points\x1a9\n" +
@@ -516,6 +519,7 @@ func file_alert_metrics_v1_metrics_proto_init() {
 	if File_alert_metrics_v1_metrics_proto != nil {
 		return
 	}
+	file_alert_metrics_v1_metrics_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

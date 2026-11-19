@@ -1,16 +1,17 @@
-# P10 / R29 集群验证：rpi-k3s REVISION 11（0.6.3-dev，schema 16）
+# P10 / R29 集群验证：rpi-k3s REVISION 12（0.6.4-dev，schema 16）
 
 - 日期：2026-11-19
 - 目标：`~/.kube/rpi-k3s.yaml`，namespace `alert-platform`，release `ap-dev`
-- 镜像：`alert-platform:0.6.3-dev`（arm64，节点本地导入，`IfNotPresent`）
+- 镜像：`alert-platform:0.6.4-dev`（arm64，节点本地导入，`IfNotPresent`；0.6.3→0.6.4 修复
+  metrics IDL `value=0` 被 `omitempty` 丢弃的问题，proto 改 `optional double` + 回归测试）
 - 变更：P10-001..008 + AUD-001..016 修复批次（main@b4d9d4a + 集群适配）
 
 ## 1. 发布结果
 
 | 项 | 结果 |
 |---|---|
-| Helm | **REVISION 11 / deployed**（chart 0.3.0） |
-| 镜像 | api/edge/migrate 全部 `alert-platform:0.6.3-dev` |
+| Helm | **REVISION 12 / deployed**（chart 0.3.0） |
+| 镜像 | api/edge/migrate 全部 `alert-platform:0.6.4-dev` |
 | Pod | api 1/1 Running、edge 1/1 Running、migrate Completed、dev-pg Running |
 | 节点 | 全部钉在 `rpi4-011`（镜像导入节点） |
 | schema | **16**（新建表 `transition_archive_queue`、`component_leases` 均存在） |

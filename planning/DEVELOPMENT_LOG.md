@@ -1069,3 +1069,7 @@ P9-CH-01 ClickHouse 归档（INC-007 联动）、P9-INT-01 真实集成（BLOCKE
   附加 `role=processor`）；`scripts/test_chart_worker_profile.py` 纳入 CI charts job。
 - **部署坑**：本机 18080 已被其他 kubectl port-forward 占用，集群验收改用独立端口 18180
   （此前一次 curl 可能命中错误服务，已在证据文件中更正）。
+- **IDL 序列化回归（实机抓到）**：`MetricPoint.value` 为 proto3 隐式 presence + `omitempty`，
+  真实样本值 0 被 JSON 丢弃（`{"timestamp":...}`），console `value.toFixed` 会报错。改为
+  `optional double value`（指针编码 0），handler 传指针，补零值回归断言；集群升到
+  **REVISION 12 / 0.6.4-dev**。
